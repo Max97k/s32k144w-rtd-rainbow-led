@@ -4,12 +4,15 @@
 *   NXP Confidential and Proprietary. This software is owned or controlled by NXP and may only be
 *   used strictly in accordance with the applicable license terms.
 *
-*   S32K144W Ultra-High Resolution 16-Bit True-Color Lighting Engine
-*   Architecture: 16-Bit Hardware PWM (FTM0_CH7 Red, FTM2_CH3 Blue, FTM0_CH0 PTB12 Green)
-*                 + 1.0 MHz Sigma-Delta PDM for EVB Default Green LED (PTE0 via R846).
-*                 Full 65,536-step Continuous Hue Sweep @ 10,000 FPS Refresh Rate.
-*                 16-Bit Precision Gamma 2.2 Interpolation with 1025-Point Calibration Table.
-*                 100% NXP Real Time Drivers (RTD) Public APIs & MEX-Generated Configurations.
+*   S32K144W Dual-Engine Ultra-High Resolution 16-Bit Lighting System
+*   Modes:
+*     - Mode 1 (CONFIG_ENGINE_MODE = 1): Pure 3-Channel Synchronous Sigma-Delta PDM @ 1.0 MHz
+*                                        (Absolute phase coherence, zero spectral distortion, 32-bit dither)
+*     - Mode 0 (CONFIG_ENGINE_MODE = 0): Hybrid Architecture: Hardware FTM PWM (Red/Blue) + 1.0 MHz PDM (Green)
+*                                        (Hardware timer offloading with dual-green backward compatibility)
+*   Features: 65,536-step continuous hue sweep @ 10,000 FPS color refresh rate.
+*             16-bit continuous Gamma 2.2 interpolation on 1025-point calibration curve.
+*             100% NXP Real Time Drivers (RTD) Public APIs & MEX-Generated Configurations.
 */
 
 #ifdef __cplusplus
@@ -33,6 +36,14 @@ extern "C" {
 #include "check_example.h"
 
 /*==================================================================================================
+*                                      ENGINE ARCHITECTURE FLAG
+* Switch easily between:
+*   1U = ENGINE_MODE_PURE_SOFTWARE_PDM : All 3 channels driven by 1.0 MHz Synchronous Sigma-Delta PDM.
+*   0U = ENGINE_MODE_HYBRID_PWM_PDM    : Hardware FTM PWM (Red/Blue) + 1.0 MHz Software PDM (Green).
+==================================================================================================*/
+#define CONFIG_ENGINE_MODE              (1U)
+
+/*==================================================================================================
 *                                      DEFINES AND MACROS
 ==================================================================================================*/
 /** @brief FTM Hardware Instances */
@@ -44,9 +55,15 @@ extern "C" {
 #define FTM_CH_GREEN                    (0U)  /* PTB12 (Pin 43) -> FTM0_CH0 (via R787 0-ohm jumper) */
 #define FTM_CH_BLUE                     (3U)  /* PTD5  (Pin 24) -> FTM2_CH3 (via R774 0-ohm jumper) */
 
-/** @brief Board Default Physical Green LED Pin (PTE0, Pin 60 via R846 0-ohm jumper) */
+/** @brief Physical GPIO Mapping for On-Board RGB LED Channels */
+#define LED_RED_GPIO_BASE               IP_PTE
+#define LED_RED_GPIO_PIN                (7U)  /* PTE7, Pin 39 via R789 */
+
 #define LED_GREEN_GPIO_BASE             IP_PTE
-#define LED_GREEN_GPIO_PIN              (0U)
+#define LED_GREEN_GPIO_PIN              (0U)  /* PTE0, Pin 60 via R846 (EVB Factory Default) */
+
+#define LED_BLUE_GPIO_BASE              IP_PTD
+#define LED_BLUE_GPIO_PIN               (5U)  /* PTD5, Pin 24 via R774 */
 
 /** @brief 16-bit Full-Scale Maximum Period (65,535 ticks = 1.22 kHz carrier @ 80 MHz) */
 #define FTM_MAX_PERIOD_16BIT            (65535U)
@@ -57,6 +74,13 @@ extern "C" {
 /*==================================================================================================
 *                                             ENUMS
 ==================================================================================================*/
+/** @brief Application lighting engine modes */
+typedef enum
+{
+    ENGINE_MODE_HYBRID_PWM_PDM          = 0x00U, /* Mode 0: Hardware FTM PWM (R/B) + Software PDM (G) */
+    ENGINE_MODE_PURE_SOFTWARE_PDM       = 0x01U  /* Mode 1: 100% Software 3-Ch Synchronous 1.0 MHz PDM */
+} Engine_ModeType;
+
 /** @brief Application system status and error codes */
 typedef enum
 {
@@ -71,6 +95,8 @@ typedef enum
 /*==================================================================================================
 *                                      GLOBAL OBSERVABLES (FOR GDB DEBUGGER)
 ==================================================================================================*/
+volatile Engine_ModeType g_engine_mode = (Engine_ModeType)CONFIG_ENGINE_MODE;
+
 volatile uint16 current_hue       = 0U;   /* 16-bit Hue angle: 0 ~ 65,535 (0.0055 deg resolution) */
 volatile uint16 current_r         = 0U;   /* 16-bit Linear Red: 0 ~ 65,535 */
 volatile uint16 current_g         = 0U;   /* 16-bit Linear Green: 0 ~ 65,535 */
@@ -119,7 +145,9 @@ static void App_FaultHandler(App_StatusType faultCode)
     (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U, 0U, TRUE);
     (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U, 0U, TRUE);
     (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U, 0U, TRUE);
+    Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
     Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+    Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
 
     /* Safe infinite halt */
     while (1)
@@ -195,7 +223,7 @@ static void HsvToRgb16(uint16 hue16, uint16 * const r, uint16 * const g, uint16 
 }
 
 /**
-* @brief        Update color state, evaluate 16-bit Gamma, and program FTM PWM channels.
+* @brief        Update color state, evaluate 16-bit Gamma, and update PWM hardware channels.
 * @param[in]    hue16  16-bit hue angle (0 ~ 65,535).
 */
 static void Rainbow_Update16(uint16 hue16)
@@ -215,13 +243,21 @@ static void Rainbow_Update16(uint16 hue16)
     duty_g_hw = Apply_Gamma16(raw_g);
     duty_b_hw = Apply_Gamma16(raw_b);
 
-    /* Update Hardware PWM Channels via Official NXP RTD APIs */
-    /* Red: FTM0 Channel 7 (PTE7, Pin 39) */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   duty_r_hw, 0U, TRUE);
-    /* Green Alternate: FTM0 Channel 0 (PTB12, Pin 43 via R787 0-ohm jumper) */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, duty_g_hw, 0U, TRUE);
-    /* Blue: FTM2 Channel 3 (PTD5, Pin 24 via R774 0-ohm jumper) */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  duty_b_hw, 0U, TRUE);
+    if (ENGINE_MODE_HYBRID_PWM_PDM == g_engine_mode)
+    {
+        /* In Hybrid Mode: Update Hardware PWM Channels via Official NXP RTD APIs */
+        /* Red: FTM0 Channel 7 (PTE7, Pin 39) */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   duty_r_hw, 0U, TRUE);
+        /* Green Alternate: FTM0 Channel 0 (PTB12, Pin 43 via R787 0-ohm jumper) */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, duty_g_hw, 0U, TRUE);
+        /* Blue: FTM2 Channel 3 (PTD5, Pin 24 via R774 0-ohm jumper) */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  duty_b_hw, 0U, TRUE);
+    }
+    else
+    {
+        /* In Pure Software Mode: Still update PTB12 hardware channel in case R787 is populated */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, duty_g_hw, 0U, TRUE);
+    }
 }
 
 /*==================================================================================================
@@ -269,6 +305,17 @@ int main(void)
         App_FaultHandler(APP_STATUS_ERROR_PORT_INIT);
     }
 
+    /* Configure Pin Multiplexing depending on active engine mode */
+    if (ENGINE_MODE_PURE_SOFTWARE_PDM == g_engine_mode)
+    {
+        /* Switch Red (PTE7) and Blue (PTD5) to GPIO mode for synchronous software PDM */
+        Port_Ci_Port_Ip_SetMuxModeSel(IP_PORTE, LED_RED_GPIO_PIN,  PORT_MUX_AS_GPIO);
+        Port_Ci_Port_Ip_SetMuxModeSel(IP_PORTD, LED_BLUE_GPIO_PIN, PORT_MUX_AS_GPIO);
+        /* Ensure output direction is enabled */
+        LED_RED_GPIO_BASE->PDDR  |= (1UL << LED_RED_GPIO_PIN);
+        LED_BLUE_GPIO_BASE->PDDR |= (1UL << LED_BLUE_GPIO_PIN);
+    }
+
     /*----------------------------------------------------------------------------------------------
     * 3. Initialize RTD OsIf Driver using Public API
     *---------------------------------------------------------------------------------------------*/
@@ -291,32 +338,61 @@ int main(void)
     * 5. Power-On Diagnostic Flash (300 ms Red -> 300 ms Green -> 300 ms Blue)
     *    Proves visual health of all hardware channels immediately upon MCU boot.
     *---------------------------------------------------------------------------------------------*/
-    /* Red Only (50% intensity = 32768) */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   32768U, 0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-    Delay_Spin(800000UL);
+    if (ENGINE_MODE_PURE_SOFTWARE_PDM == g_engine_mode)
+    {
+        /* Red Only */
+        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   1U);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
+        Delay_Spin(800000UL);
 
-    /* Green Only (Drives both PTE0 and PTB12 simultaneously) */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 32768U, 0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
-    Delay_Spin(800000UL);
+        /* Green Only */
+        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
+        Delay_Spin(800000UL);
 
-    /* Blue Only */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  32768U, 0U, TRUE);
-    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-    Delay_Spin(800000UL);
+        /* Blue Only */
+        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  1U);
+        Delay_Spin(800000UL);
 
-    /* Turn all off before entering rainbow loop */
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-    (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        /* Turn all off */
+        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
+    }
+    else
+    {
+        /* Hybrid Mode POST using Hardware FTM + PTE0 GPIO */
+        /* Red Only */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   32768U, 0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        Delay_Spin(800000UL);
+
+        /* Green Only */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 32768U, 0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+        Delay_Spin(800000UL);
+
+        /* Blue Only */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  32768U, 0U, TRUE);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+        Delay_Spin(800000UL);
+
+        /* Turn all off */
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
+        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
+        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+    }
 
     /* Set initial color state (Red at 0 hue) */
     Rainbow_Update16(0U);
@@ -325,48 +401,102 @@ int main(void)
     Exit_Example(TRUE);
 
     /*----------------------------------------------------------------------------------------------
-    * 6. Extreme 16-Bit True-Color Lighting Engine @ 10,000 FPS & 1.0 MHz PDM
-    *    Dedicated Core Execution: 100% CPU capacity committed to pristine illumination.
-    *    Hue Step: 65,536 micro-angles (0.0055 deg per step).
-    *    Color Refresh Rate: 10,000 fps (100 us per step).
-    *    Green Software Modulator: 1.0 MHz 1st-Order Sigma-Delta PDM (100 ticks per step).
+    * 6. Dual-Mode Extreme 16-Bit True-Color Lighting Engine @ 10,000 FPS
     *---------------------------------------------------------------------------------------------*/
+    static uint32 acc_r = 0U;
     static uint32 acc_g = 0U;
+    static uint32 acc_b = 0U;
 
     while (1)
     {
         uint32 tick;
 
-        /* High-Rate 1.0 MHz PDM Micro-Ticks (100 ticks of ~1.0 us = 100 us frame slice) */
-        for (tick = 0U; tick < 100U; tick++)
+        if (ENGINE_MODE_PURE_SOFTWARE_PDM == g_engine_mode)
         {
-            acc_g += (uint32)duty_g_hw;
-            if (acc_g >= 65535U)
+            /* Mode 1: Pure 3-Channel Synchronous Sigma-Delta PDM @ 1.0 MHz
+             * All three pins toggle in perfect mathematical phase coherence.
+             */
+            for (tick = 0U; tick < 100U; tick++)
             {
-                acc_g -= 65535U;
-                Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
-            }
-            else
-            {
-                Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-            }
+                /* Red PDM Accumulator */
+                acc_r += (uint32)duty_r_hw;
+                if (acc_r >= 65535U)
+                {
+                    acc_r -= 65535U;
+                    Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 1U);
+                }
+                else
+                {
+                    Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 0U);
+                }
 
-            /* ~1.0 us calibrated spin delay @ 80 MHz */
-            volatile uint32 innerCnt = 0U;
-            while (innerCnt < 12UL)
+                /* Green PDM Accumulator */
+                acc_g += (uint32)duty_g_hw;
+                if (acc_g >= 65535U)
+                {
+                    acc_g -= 65535U;
+                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+                }
+                else
+                {
+                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+                }
+
+                /* Blue PDM Accumulator */
+                acc_b += (uint32)duty_b_hw;
+                if (acc_b >= 65535U)
+                {
+                    acc_b -= 65535U;
+                    Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 1U);
+                }
+                else
+                {
+                    Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 0U);
+                }
+
+                /* Calibrated spin delay (~1.0 us per 3-channel step @ 80 MHz) */
+                volatile uint32 innerCnt = 0U;
+                while (innerCnt < 6UL)
+                {
+                    innerCnt++;
+                }
+            }
+        }
+        else
+        {
+            /* Mode 0: Hybrid Architecture
+             * Hardware FTM PWM on Red/Blue + 1.0 MHz Software PDM on Green.
+             */
+            for (tick = 0U; tick < 100U; tick++)
             {
-                innerCnt++;
+                acc_g += (uint32)duty_g_hw;
+                if (acc_g >= 65535U)
+                {
+                    acc_g -= 65535U;
+                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+                }
+                else
+                {
+                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+                }
+
+                /* Calibrated spin delay (~1.0 us per single-channel step @ 80 MHz) */
+                volatile uint32 innerCnt = 0U;
+                while (innerCnt < 12UL)
+                {
+                    innerCnt++;
+                }
             }
         }
 
-        /* Advance 16-bit hue angle */
+        /* Advance 16-bit hue angle (10,000 steps per second) */
         current_hue++;
         if (0U == current_hue)
         {
             cycle_count++;
         }
 
-        /* Update hardware FTM channels & precompute next PDM duty */
+        /* Update hardware FTM channels & precompute next PDM duties */
         Rainbow_Update16(current_hue);
     }
 

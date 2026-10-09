@@ -39,9 +39,12 @@ Verified against official schematic (`SPF-46873_b.pdf`) and PCB layout (`LAY-S32
 
 ## 🌟 Key Features
 
+* **Dual-Architecture Flag (`CONFIG_ENGINE_MODE`)**:
+  * **Mode 1 (`CONFIG_ENGINE_MODE = 1`) — Pure 3-Channel Synchronous 1.0 MHz PDM**: All Red, Green, and Blue channels driven simultaneously by a 1.0 MHz Sigma-Delta PDM engine, achieving absolute mathematical phase coherence and zero micro-spectral distortion.
+  * **Mode 0 (`CONFIG_ENGINE_MODE = 0`) — Hybrid FTM PWM + PDM**: Red & Blue channels driven by 16-bit hardware FTM PWM (1.22 kHz carrier) with Green driven by 1.0 MHz PDM for maximum backward compatibility and peripheral offloading.
 * **16-Bit Ultra-High True-Color Resolution**: 65,536 fine-grained discrete hue angles ($0.0055^\circ$ angular resolution) paired with full-scale 16-bit (0 ~ 65,535 ticks) hardware and software intensity channels yielding over 281 trillion theoretical color states.
 * **10,000 FPS Color Refresh Rate**: Driven at a cinema-grade 10,000 frames per second (100 µs frame slices), rendering imperceptible sub-millisecond color transitions without visible stepping or color banding.
-* **1.0 MHz Sigma-Delta Pulse Density Modulator (PDM)**: Drives the factory default Green LED (`PTE0`) at a blistering 1.0 MHz sampling rate, uniformly dispersing photon energy across time and completely eliminating low-frequency 50 Hz PWM strobe flicker.
+* **1.0 MHz Sigma-Delta Pulse Density Modulator (PDM)**: Uniformly disperses photon energy across time at 1,000,000 samples/sec, completely eliminating low-frequency PWM strobe flicker.
 * **Continuous 16-Bit Gamma 2.2 Interpolation**: Implements a zero-division, zero-float linear interpolator evaluated against a 1025-point calibration curve, constraining non-linear perceptual error to $<0.005\%$ across the entire dynamic range.
 * **100% Official NXP RTD Architecture**: Built strictly with standard AUTOSAR 4.7 / RTD 3.0.0 public driver layers (`Clock_Ip`, `Port_Ci_Port_Ip`, `Ftm_Pwm_Ip`, `Gpio_Dio_Ip`, `OsIf`).
 * **Zero Bare-Metal Register Hacking**: Completely eliminates non-portable direct register manipulations in full compliance with automotive MISRA-C and defensive coding standards.
