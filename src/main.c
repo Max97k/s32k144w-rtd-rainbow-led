@@ -35,6 +35,15 @@ extern "C" {
 #include "gamma_lut_1025.h"
 #include "check_example.h"
 
+/* Peripheral register definitions for ADC0, PCC, PMC */
+#include "S32K144W_PCC.h"
+#include "S32K144W_PMC.h"
+#include "S32K144W_ADC.h"
+
+/* Compatibility mapping for signed integer types under AUTOSAR StandardTypes */
+typedef sint16 int16;
+typedef sint32 int32;
+
 /*==================================================================================================
 *                                      ENGINE ARCHITECTURE FLAG
 * Switch easily between:
@@ -58,9 +67,37 @@ extern "C" {
 ==================================================================================================*/
 #define ENABLE_CREE_LED_CALIBRATION     (1U)
 
-#define CALIB_GAIN_RED                  (53739UL)  /* 82.0% scaling for Cree CLP6C-FKB */
+#define CALIB_GAIN_RED_BASE             (53739UL)  /* Nominal 82.0% scaling for Cree CLP6C-FKB @ 25 degC */
 #define CALIB_GAIN_GREEN                (40632UL)  /* 62.0% scaling for Cree CLP6C-FKB */
 #define CALIB_GAIN_BLUE                 (65535UL)  /* 100.0% scaling for Cree CLP6C-FKB */
+
+/*==================================================================================================
+*             32-BIT GALOIS LINEAR FEEDBACK SHIFT REGISTER (LFSR) CONFIGURATION
+* Polynomial: x^32 + x^31 + x^29 + x + 1 (Feedback Mask: 0x80000057UL)
+* Period: 2^32 - 1 = 4,294,967,295 cycles
+* Purpose: Spread-Spectrum Carrier Dithering (CISPR 25) & Sigma-Delta Idle Tone Elimination.
+==================================================================================================*/
+#define LFSR_FEEDBACK_MASK              (0x80000057UL)
+#define LFSR_SEED_INITIAL               (0x5A17C395UL)
+
+/*==================================================================================================
+*         VIRTUAL LUMPED RC THERMAL OBSERVER & DROOP COMPENSATION PARAMETERS
+* Physical Characteristics:
+*   - Red LED (AlInGaP): Vf = 2.0V, If = 4.19mA, P_max = 8.38 mW (8380 uW)
+*   - Green LED (InGaN): Vf = 3.2V, If = 2.43mA, P_max = 7.78 mW (7780 uW)
+*   - Blue LED (InGaN):  Vf = 3.2V, If = 2.43mA, P_max = 7.78 mW (7780 uW)
+*   - Thermal Resistance: Rth(j-a) ~ 350 degC / W
+*   - Red Droop Sensitivity: -0.8% luminous flux / degC above 25 degC
+*   - Compensation Slope: +430 gain counts / degC rise (53739 * 0.008)
+==================================================================================================*/
+#define THERMAL_NOMINAL_TEMP_C          (25)
+#define RED_DROOP_COMP_SLOPE            (430L)
+#define CALIB_GAIN_RED_MIN              (35000UL)
+#define CALIB_GAIN_RED_MAX              (65535UL)
+
+/* ADC0 Internal Temperature Sensor Channel & Timeout */
+#define ADC_CH_TEMP_SENSOR              (26U)
+#define ADC_TIMEOUT_COUNT               (50000UL)
 
 /*==================================================================================================
 *                                      DEFINES AND MACROS
@@ -108,7 +145,8 @@ typedef enum
     APP_STATUS_ERROR_PLL_TIMEOUT        = 0x02U,
     APP_STATUS_ERROR_PORT_INIT          = 0x03U,
     APP_STATUS_ERROR_FTM0_INIT          = 0x04U,
-    APP_STATUS_ERROR_FTM2_INIT          = 0x05U
+    APP_STATUS_ERROR_FTM2_INIT          = 0x05U,
+    APP_STATUS_ERROR_ADC_INIT           = 0x06U
 } App_StatusType;
 
 /*==================================================================================================
@@ -126,6 +164,14 @@ volatile uint16 duty_b_hw         = 0U;   /* 16-bit Gamma 2.2 Blue Duty: 0 ~ 65,
 volatile uint32 cycle_count       = 0U;   /* Completed 360-degree rainbow loops */
 volatile uint32 last_fault_status = APP_STATUS_SUCCESS; /* System health tracker */
 
+/* Observables for Spread-Spectrum & Thermal Observers */
+volatile uint32 g_lfsr_state          = LFSR_SEED_INITIAL;   /* 32-bit Galois LFSR state */
+volatile uint16 g_adc_raw_temp        = 586U;                /* Raw ADC0 temperature sensor reading */
+volatile int16  g_mcu_temp_c          = 25;                  /* Filtered MCU die temperature (degC) */
+volatile uint16 g_thermal_delta_mc    = 0U;                  /* LED package self-heating (mdegC) */
+volatile int16  g_led_junction_temp_c = 25;                  /* Total LED junction temperature Tj (degC) */
+volatile uint32 g_dynamic_gain_red    = CALIB_GAIN_RED_BASE; /* Real-time compensated red channel gain */
+
 /*==================================================================================================
 *                                   FUNCTION PROTOTYPES
 ==================================================================================================*/
@@ -134,6 +180,10 @@ static void HsvToRgb16(uint16 hue16, uint16 * const r, uint16 * const g, uint16 
 static void Rainbow_Update16(uint16 hue16);
 static void App_FaultHandler(App_StatusType faultCode);
 static void Delay_Spin(uint32 count);
+static inline uint32 Galois_LFSR_Next(void);
+static void App_Adc_Init(void);
+static uint16 App_Adc_ReadRaw(uint8 channel);
+static void App_Thermal_Observer_Update(void);
 
 /*==================================================================================================
 *                                       LOCAL FUNCTIONS
@@ -242,6 +292,150 @@ static void HsvToRgb16(uint16 hue16, uint16 * const r, uint16 * const g, uint16 
 }
 
 /**
+* @brief        Galois 32-bit Linear Feedback Shift Register (LFSR) pseudo-random number generator.
+* @details      Implements maximal-period polynomial x^32 + x^31 + x^29 + x + 1.
+*               Period: 4,294,967,295 non-repeating states.
+* @return       New 32-bit pseudo-random state.
+*/
+static inline uint32 Galois_LFSR_Next(void)
+{
+    uint32 lsb = g_lfsr_state & 1U;
+    g_lfsr_state >>= 1U;
+    if (lsb != 0U)
+    {
+        g_lfsr_state ^= LFSR_FEEDBACK_MASK;
+    }
+    return g_lfsr_state;
+}
+
+/**
+* @brief        Initialize ADC0 peripheral and enable internal bandgap/temperature sensor biasing.
+*/
+static void App_Adc_Init(void)
+{
+    /* 1. Ensure ADC0 peripheral clock is active and sourced from SIRCDIV2 (8 MHz) */
+    IP_PCC->PCCn[PCC_ADC0_INDEX] &= ~PCC_PCCn_CGC_MASK;
+    IP_PCC->PCCn[PCC_ADC0_INDEX] = PCC_PCCn_PCS(2U) | PCC_PCCn_CGC_MASK;
+
+    /* 2. Enable PMC Bandgap and Temperature Sensor bias buffer */
+    IP_PMC->REGSC |= PMC_REGSC_BIASEN_MASK;
+
+    /* 3. Configure ADC0: 12-bit mode, bus/input clock, divide by 1 */
+    IP_ADC0->CFG1 = ADC_CFG1_MODE(1U) | ADC_CFG1_ADICLK(0U) | ADC_CFG1_ADIV(0U);
+    IP_ADC0->CFG2 = ADC_CFG2_SMPLTS(16U);
+    IP_ADC0->SC2  = 0U; /* Software trigger, default voltage reference VREFH/VREFL */
+    IP_ADC0->SC3  = 0U; /* Single conversion, no hardware average */
+}
+
+/**
+* @brief        Read raw ADC sample on specified channel with safety timeout protection.
+* @param[in]    channel  ADC input channel index.
+* @return       12-bit ADC raw count (0 ~ 4095).
+*/
+static uint16 App_Adc_ReadRaw(uint8 channel)
+{
+    uint32 timeout = ADC_TIMEOUT_COUNT;
+
+    /* Trigger conversion on requested channel */
+    IP_ADC0->SC1[0] = ADC_SC1_ADCH(channel);
+
+    /* Wait for conversion complete flag (COCO) with bounded safety timeout */
+    while (((IP_ADC0->SC1[0] & ADC_SC1_COCO_MASK) == 0U) && (timeout > 0U))
+    {
+        timeout--;
+    }
+
+    if (0U == timeout)
+    {
+        return 586U; /* Fallback to nominal 25 degC reading */
+    }
+
+    return (uint16)(IP_ADC0->R[0] & ADC_R_D_MASK);
+}
+
+/**
+* @brief        Virtual lumped RC thermal observer and dynamic droop compensation engine.
+* @details      Combines MCU on-chip temperature monitoring with real-time Joule dissipation
+*               modeling of the Cree CLP6C-FKB package, dynamically adapting CALIB_GAIN_RED.
+*/
+static void App_Thermal_Observer_Update(void)
+{
+    static uint32 s_adc_decimator = 0U;
+    static int32  s_mcu_temp_filtered_q8 = (25L << 8);
+    static uint32 s_thermal_delta_acc = 0U; /* Q16 millidegrees */
+
+    /* 1. Periodic ADC Acquisition (Decimated to 100 Hz / every 100 hue ticks) */
+    s_adc_decimator++;
+    if (s_adc_decimator >= 100U)
+    {
+        s_adc_decimator = 0U;
+        uint16 raw_adc = App_Adc_ReadRaw(ADC_CH_TEMP_SENSOR);
+        g_adc_raw_temp = raw_adc;
+
+        /* Convert raw 12-bit ADC to die temperature in degC:
+         * At 25 degC, Vtemp ~= 0.716V -> raw ~= 586 counts @ 5.0V Vdda.
+         * Slope ~= -1.62 mV / degC -> ~1.327 counts / degC.
+         * T_inst = 25 + ((586 - raw) * 100) / 133
+         */
+        int32 t_inst = 25L + (((586L - (int32)raw_adc) * 100L) / 133L);
+        if (t_inst < -40L)
+        {
+            t_inst = -40L;
+        }
+        else if (t_inst > 125L)
+        {
+            t_inst = 125L;
+        }
+
+        /* 1st-order IIR low-pass filter (time constant ~160 ms @ 100 Hz) */
+        s_mcu_temp_filtered_q8 += ((t_inst << 8) - s_mcu_temp_filtered_q8) >> 4U;
+        g_mcu_temp_c = (int16)(s_mcu_temp_filtered_q8 >> 8U);
+    }
+
+    /* 2. Virtual Lumped RC Thermal Observer for Cree CLP6C-FKB:
+     * Instantaneous power:
+     *   P_red   = 8.38 mW * (duty_r / 65536)
+     *   P_green = 7.78 mW * (duty_g / 65536)
+     *   P_blue  = 7.78 mW * (duty_b / 65536)
+     * Total power in microwatts (uW):
+     */
+    uint32 p_total_uw = (((uint32)duty_r_hw * 8380UL) +
+                         ((uint32)duty_g_hw * 7780UL) +
+                         ((uint32)duty_b_hw * 7780UL)) >> 16U;
+
+    /* Target steady-state self-heating in millidegrees C (mdegC):
+     * delta_T = P_uw * Rth(350 degC/W) / 1000 = (P_uw * 7) / 20
+     */
+    uint32 delta_target_mc = (p_total_uw * 7UL) / 20UL;
+
+    /* Discrete RC filter with Tau ~ 1.0 s @ 10,000 Hz step rate:
+     * delta_k = delta_k-1 + (delta_target - delta_k-1) / 10000
+     */
+    uint32 target_q16 = delta_target_mc << 16U;
+    s_thermal_delta_acc += (uint32)((int32)(target_q16 - s_thermal_delta_acc) / 10000L);
+    g_thermal_delta_mc = (uint16)(s_thermal_delta_acc >> 16U);
+
+    /* Total Junction Temperature Tj = T_mcu + delta_T_self */
+    g_led_junction_temp_c = g_mcu_temp_c + (int16)(g_thermal_delta_mc / 1000U);
+
+    /* 3. Real-Time Photometric Gain Adaptation for Red Channel:
+     * Counteracts AlInGaP thermal droop (-0.8% luminous flux / degC above 25 degC).
+     * Slope: +430 gain counts per degC rise.
+     */
+    int32 delta_t_c = (int32)g_led_junction_temp_c - THERMAL_NOMINAL_TEMP_C;
+    int32 comp_gain = (int32)CALIB_GAIN_RED_BASE + (delta_t_c * RED_DROOP_COMP_SLOPE);
+    if (comp_gain < (int32)CALIB_GAIN_RED_MIN)
+    {
+        comp_gain = (int32)CALIB_GAIN_RED_MIN;
+    }
+    else if (comp_gain > (int32)CALIB_GAIN_RED_MAX)
+    {
+        comp_gain = (int32)CALIB_GAIN_RED_MAX;
+    }
+    g_dynamic_gain_red = (uint32)comp_gain;
+}
+
+/**
 * @brief        Update color state, evaluate 16-bit Gamma, and update PWM hardware channels.
 * @param[in]    hue16  16-bit hue angle (0 ~ 65,535).
 */
@@ -254,10 +448,10 @@ static void Rainbow_Update16(uint16 hue16)
     HsvToRgb16(hue16, &raw_r, &raw_g, &raw_b);
 
 #if (ENABLE_CREE_LED_CALIBRATION == 1U)
-    /* Apply Cree CLP6C-FKB photometric white-balance and luminous flux balancing */
-    raw_r = (uint16)(((uint32)raw_r * CALIB_GAIN_RED)   >> 16U);
-    raw_g = (uint16)(((uint32)raw_g * CALIB_GAIN_GREEN) >> 16U);
-    raw_b = (uint16)(((uint32)raw_b * CALIB_GAIN_BLUE)  >> 16U);
+    /* Apply Cree CLP6C-FKB dynamic thermal droop compensated white-balance */
+    raw_r = (uint16)(((uint32)raw_r * g_dynamic_gain_red) >> 16U);
+    raw_g = (uint16)(((uint32)raw_g * CALIB_GAIN_GREEN)   >> 16U);
+    raw_b = (uint16)(((uint32)raw_b * CALIB_GAIN_BLUE)    >> 16U);
 #endif
 
     current_r = raw_r;
@@ -348,6 +542,11 @@ int main(void)
     OsIf_Init(NULL_PTR);
 
     /*----------------------------------------------------------------------------------------------
+    * 3b. Initialize ADC0 and PMC Bandgap/Temperature Sensor for Real-Time Thermal Monitoring
+    *---------------------------------------------------------------------------------------------*/
+    App_Adc_Init();
+
+    /*----------------------------------------------------------------------------------------------
     * 4. Initialize Hardware FTM PWM Drivers via Official NXP RTD APIs
     *---------------------------------------------------------------------------------------------*/
     /* Initialize FTM0 (Controls Red on CH7 and Green on CH0) */
@@ -420,6 +619,9 @@ int main(void)
         Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
     }
 
+    /* Run initial thermal observer update to capture ambient die temperature */
+    App_Thermal_Observer_Update();
+
     /* Set initial color state (Red at 0 hue) */
     Rainbow_Update16(0U);
 
@@ -428,6 +630,9 @@ int main(void)
 
     /*----------------------------------------------------------------------------------------------
     * 6. Dual-Mode Extreme 16-Bit True-Color Lighting Engine @ 10,000 FPS
+    *    Integrated with:
+    *      - Feature 1: Spread-Spectrum / Random Jitter Modulation (32-bit Galois LFSR)
+    *      - Feature 2: Real-Time Virtual Lumped RC Thermal Droop Compensation
     *---------------------------------------------------------------------------------------------*/
     static uint32 acc_r = 0U;
     static uint32 acc_g = 0U;
@@ -441,12 +646,17 @@ int main(void)
         {
             /* Mode 1: Pure 3-Channel Synchronous Sigma-Delta PDM @ 1.0 MHz
              * All three pins toggle in perfect mathematical phase coherence.
+             * 32-bit Galois LFSR injects threshold micro-dither and pacing micro-jitter.
              */
             for (tick = 0U; tick < 100U; tick++)
             {
-                /* Red PDM Accumulator */
+                uint32 rand_val = Galois_LFSR_Next();
+                uint32 dither   = rand_val & 0x0FU; /* 0 ~ 15 micro-tick dither */
+                uint32 thresh   = 65535U - 7U + dither;
+
+                /* Red PDM Accumulator with threshold dithering */
                 acc_r += (uint32)duty_r_hw;
-                if (acc_r >= 65535U)
+                if (acc_r >= thresh)
                 {
                     acc_r -= 65535U;
                     Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 1U);
@@ -456,9 +666,9 @@ int main(void)
                     Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 0U);
                 }
 
-                /* Green PDM Accumulator */
+                /* Green PDM Accumulator with threshold dithering */
                 acc_g += (uint32)duty_g_hw;
-                if (acc_g >= 65535U)
+                if (acc_g >= thresh)
                 {
                     acc_g -= 65535U;
                     Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
@@ -468,9 +678,9 @@ int main(void)
                     Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
                 }
 
-                /* Blue PDM Accumulator */
+                /* Blue PDM Accumulator with threshold dithering */
                 acc_b += (uint32)duty_b_hw;
-                if (acc_b >= 65535U)
+                if (acc_b >= thresh)
                 {
                     acc_b -= 65535U;
                     Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 1U);
@@ -480,9 +690,10 @@ int main(void)
                     Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 0U);
                 }
 
-                /* Calibrated spin delay (~1.0 us per 3-channel step @ 80 MHz) */
+                /* Spread-Spectrum Delay Pacing: controlled micro-jitter spreads discrete EMI spikes */
+                uint32 jitter_delay = 5UL + ((rand_val >> 4U) & 0x02U); /* 5 or 7 loops, mean = 6.0 loops */
                 volatile uint32 innerCnt = 0U;
-                while (innerCnt < 6UL)
+                while (innerCnt < jitter_delay)
                 {
                     innerCnt++;
                 }
@@ -495,8 +706,12 @@ int main(void)
              */
             for (tick = 0U; tick < 100U; tick++)
             {
+                uint32 rand_val = Galois_LFSR_Next();
+                uint32 dither   = rand_val & 0x0FU;
+                uint32 thresh   = 65535U - 7U + dither;
+
                 acc_g += (uint32)duty_g_hw;
-                if (acc_g >= 65535U)
+                if (acc_g >= thresh)
                 {
                     acc_g -= 65535U;
                     Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
@@ -506,9 +721,10 @@ int main(void)
                     Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
                 }
 
-                /* Calibrated spin delay (~1.0 us per single-channel step @ 80 MHz) */
+                /* Spread-Spectrum Delay Pacing for Hybrid Mode */
+                uint32 jitter_delay = 11UL + ((rand_val >> 4U) & 0x02U); /* 11 or 13 loops, mean = 12.0 loops */
                 volatile uint32 innerCnt = 0U;
-                while (innerCnt < 12UL)
+                while (innerCnt < jitter_delay)
                 {
                     innerCnt++;
                 }
@@ -521,6 +737,9 @@ int main(void)
         {
             cycle_count++;
         }
+
+        /* Update virtual lumped RC thermal observer and adapt red gain */
+        App_Thermal_Observer_Update();
 
         /* Update hardware FTM channels & precompute next PDM duties */
         Rainbow_Update16(current_hue);
