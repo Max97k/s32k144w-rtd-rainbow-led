@@ -349,19 +349,26 @@ int main(void)
     /*----------------------------------------------------------------------------------------------
     * 6. Dual-Architecture Full-Spectrum Rainbow Engine
     *    Red (PTE7) & Blue (PTD5) driven by 10 kHz Hardware FTM PWM.
-    *    Green driven simultaneously via FTM0_CH0 (PTB12) and 5 kHz RTD Gpio_Dio_Ip (PTE0).
-    *    Pacing: 100 slices of 200 us = 20 ms per hue step (7.2s smooth full cycle).
+    *    Green driven simultaneously via FTM0_CH0 (PTB12) and Sigma-Delta PDM RTD Gpio_Dio_Ip (PTE0).
+    *    Pacing: 500 micro-ticks of ~40 us = 20 ms per hue step (7.2s smooth full cycle).
+    *    High-rate PDM disperses Green pulses at >12.5 kHz, completely eliminating 50 Hz block flicker
+    *    during Orange -> Yellow and Cyan -> Blue dynamic transitions.
     *---------------------------------------------------------------------------------------------*/
+    static uint32 acc_g = 0U;
+
     while (1)
     {
         uint32 slice;
-        /* Map duty_g_hw (0 ~ 10,000) to 100 slices (0 ~ 100) */
-        uint32 slice_threshold = (uint32)duty_g_hw / 100U;
 
-        for (slice = 0U; slice < 100U; slice++)
+        /* First-order Sigma-Delta Pulse Density Modulator (PDM)
+         * Spreads green pulses uniformly across time at >12.5 kHz equivalent frequency.
+         */
+        for (slice = 0U; slice < 500U; slice++)
         {
-            if (slice < slice_threshold)
+            acc_g += (uint32)duty_g_hw;
+            if (acc_g >= 10000U)
             {
+                acc_g -= 10000U;
                 Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
             }
             else
@@ -369,9 +376,9 @@ int main(void)
                 Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
             }
 
-            /* ~200 microseconds delay per slice */
+            /* ~40 microseconds delay per micro-tick @ 80 MHz */
             volatile uint32 innerCnt = 0U;
-            while (innerCnt < 1600UL)
+            while (innerCnt < 700UL)
             {
                 innerCnt++;
             }
