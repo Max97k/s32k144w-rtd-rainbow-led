@@ -40,10 +40,6 @@ extern "C" {
 #include "S32K144W_PMC.h"
 #include "S32K144W_ADC.h"
 
-/* Compatibility mapping for signed integer types under AUTOSAR StandardTypes */
-typedef sint16 int16;
-typedef sint32 int32;
-
 /*==================================================================================================
 *                                      ENGINE ARCHITECTURE FLAG
 * Switch easily between:
@@ -167,9 +163,9 @@ volatile uint32 last_fault_status = APP_STATUS_SUCCESS; /* System health tracker
 /* Observables for Spread-Spectrum & Thermal Observers */
 volatile uint32 g_lfsr_state          = LFSR_SEED_INITIAL;   /* 32-bit Galois LFSR state */
 volatile uint16 g_adc_raw_temp        = 586U;                /* Raw ADC0 temperature sensor reading */
-volatile int16  g_mcu_temp_c          = 25;                  /* Filtered MCU die temperature (degC) */
+volatile sint16 g_mcu_temp_c          = 25;                  /* Filtered MCU die temperature (degC) */
 volatile uint16 g_thermal_delta_mc    = 0U;                  /* LED package self-heating (mdegC) */
-volatile int16  g_led_junction_temp_c = 25;                  /* Total LED junction temperature Tj (degC) */
+volatile sint16 g_led_junction_temp_c = 25;                  /* Total LED junction temperature Tj (degC) */
 volatile uint32 g_dynamic_gain_red    = CALIB_GAIN_RED_BASE; /* Real-time compensated red channel gain */
 
 /*==================================================================================================
@@ -361,7 +357,7 @@ static uint16 App_Adc_ReadRaw(uint8 channel)
 static void App_Thermal_Observer_Update(void)
 {
     static uint32 s_adc_decimator = 0U;
-    static int32  s_mcu_temp_filtered_q8 = (25L << 8);
+    static sint32 s_mcu_temp_filtered_q8 = (25L << 8);
     static uint32 s_thermal_delta_acc = 0U; /* Q16 millidegrees */
 
     /* 1. Periodic ADC Acquisition (Decimated to 100 Hz / every 100 hue ticks) */
@@ -377,7 +373,7 @@ static void App_Thermal_Observer_Update(void)
          * Slope ~= -1.62 mV / degC -> ~1.327 counts / degC.
          * T_inst = 25 + ((586 - raw) * 100) / 133
          */
-        int32 t_inst = 25L + (((586L - (int32)raw_adc) * 100L) / 133L);
+        sint32 t_inst = 25L + (((586L - (sint32)raw_adc) * 100L) / 133L);
         if (t_inst < -40L)
         {
             t_inst = -40L;
@@ -389,7 +385,7 @@ static void App_Thermal_Observer_Update(void)
 
         /* 1st-order IIR low-pass filter (time constant ~160 ms @ 100 Hz) */
         s_mcu_temp_filtered_q8 += ((t_inst << 8) - s_mcu_temp_filtered_q8) >> 4U;
-        g_mcu_temp_c = (int16)(s_mcu_temp_filtered_q8 >> 8U);
+        g_mcu_temp_c = (sint16)(s_mcu_temp_filtered_q8 >> 8U);
     }
 
     /* 2. Virtual Lumped RC Thermal Observer for Cree CLP6C-FKB:
@@ -412,25 +408,25 @@ static void App_Thermal_Observer_Update(void)
      * delta_k = delta_k-1 + (delta_target - delta_k-1) / 10000
      */
     uint32 target_q16 = delta_target_mc << 16U;
-    s_thermal_delta_acc += (uint32)((int32)(target_q16 - s_thermal_delta_acc) / 10000L);
+    s_thermal_delta_acc += (uint32)((sint32)(target_q16 - s_thermal_delta_acc) / 10000L);
     g_thermal_delta_mc = (uint16)(s_thermal_delta_acc >> 16U);
 
     /* Total Junction Temperature Tj = T_mcu + delta_T_self */
-    g_led_junction_temp_c = g_mcu_temp_c + (int16)(g_thermal_delta_mc / 1000U);
+    g_led_junction_temp_c = g_mcu_temp_c + (sint16)(g_thermal_delta_mc / 1000U);
 
     /* 3. Real-Time Photometric Gain Adaptation for Red Channel:
      * Counteracts AlInGaP thermal droop (-0.8% luminous flux / degC above 25 degC).
      * Slope: +430 gain counts per degC rise.
      */
-    int32 delta_t_c = (int32)g_led_junction_temp_c - THERMAL_NOMINAL_TEMP_C;
-    int32 comp_gain = (int32)CALIB_GAIN_RED_BASE + (delta_t_c * RED_DROOP_COMP_SLOPE);
-    if (comp_gain < (int32)CALIB_GAIN_RED_MIN)
+    sint32 delta_t_c = (sint32)g_led_junction_temp_c - THERMAL_NOMINAL_TEMP_C;
+    sint32 comp_gain = (sint32)CALIB_GAIN_RED_BASE + (delta_t_c * RED_DROOP_COMP_SLOPE);
+    if (comp_gain < (sint32)CALIB_GAIN_RED_MIN)
     {
-        comp_gain = (int32)CALIB_GAIN_RED_MIN;
+        comp_gain = (sint32)CALIB_GAIN_RED_MIN;
     }
-    else if (comp_gain > (int32)CALIB_GAIN_RED_MAX)
+    else if (comp_gain > (sint32)CALIB_GAIN_RED_MAX)
     {
-        comp_gain = (int32)CALIB_GAIN_RED_MAX;
+        comp_gain = (sint32)CALIB_GAIN_RED_MAX;
     }
     g_dynamic_gain_red = (uint32)comp_gain;
 }
