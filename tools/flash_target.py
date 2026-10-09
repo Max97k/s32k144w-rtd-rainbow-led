@@ -37,7 +37,7 @@ def main():
         "-use_swd=1"
     ]
     server_proc = subprocess.Popen(server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(3)
+    time.sleep(5)
 
     elf_posix = elf_path.replace("\\", "/")
     with open(script_path, "w") as f:
@@ -52,6 +52,8 @@ quit
         print("[*] Connecting GDB to flash ELF image...")
         res = subprocess.run([gdb, "-x", script_path, "--batch"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
         print("[*] GDB Flash Output:\n", res.stdout.strip())
+        if res.stderr:
+            print("[*] GDB Flash Stderr:\n", res.stderr.strip())
         if res.returncode == 0:
             print("[+] Flash and target resume completed successfully!")
         else:

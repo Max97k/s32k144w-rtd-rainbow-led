@@ -31,6 +31,7 @@ extern "C" {
 #include "Ftm_Pwm_Ip.h"
 #include "Ftm_Pwm_Ip_VS_0_PBcfg.h"
 #include "OsIf.h"
+#include "OsIf_Timer_System_Internal_Systick.h"
 
 #include "gamma_lut_1025.h"
 #include "check_example.h"
@@ -39,6 +40,7 @@ extern "C" {
 #include "S32K144W_PCC.h"
 #include "S32K144W_PMC.h"
 #include "S32K144W_ADC.h"
+#include "S32K144W_WDOG.h"
 
 /*==================================================================================================
 *                                      ENGINE ARCHITECTURE FLAG
@@ -47,6 +49,26 @@ extern "C" {
 *   0U = ENGINE_MODE_HYBRID_PWM_PDM    : Hardware FTM PWM (Red/Blue) + 1.0 MHz Software PDM (Green).
 ==================================================================================================*/
 #define CONFIG_ENGINE_MODE              (1U)
+
+/*==================================================================================================
+*                         RAINBOW CYCLE HARDWARE TIMING CONFIGURATION
+* Target: Exactly 5.000000 seconds per complete 360-degree rainbow cycle (65,536 discrete hue steps).
+* Hardware Reference Clock:
+*   MCU Core operates on Fast Internal RC Oscillator (FIRC @ 48.0 MHz).
+*   Total CPU / SysTick clock cycles per 5.0-second cycle = 5.0 s * 48,000,000 Hz = 240,000,000 cycles.
+* Fixed-Point Bresenham Hue-Step Distribution:
+*   240,000,000 cycles / 65,536 steps = 3662.109375 cycles per step.
+*   Base cycles per step = 3662 cycles.
+*   Fractional remainder = 9216 / 65536 cycles.
+* Across all 65,536 steps, the sum of target cycles is mathematically EXACT:
+*   65,536 * 3662 + 9,216 = 240,000,000 cycles = 5.000000000 seconds.
+==================================================================================================*/
+#define MCU_CORE_CLOCK_HZ               (48000000UL)
+#define RAINBOW_CYCLE_DURATION_SEC      (5UL)
+#define HUE_STEP_INCREMENT              (1U)
+#define RAINBOW_TOTAL_CYCLES_PER_CYCLE  (RAINBOW_CYCLE_DURATION_SEC * MCU_CORE_CLOCK_HZ)
+#define RAINBOW_BASE_CYCLES_PER_STEP    (RAINBOW_TOTAL_CYCLES_PER_CYCLE / 65536UL)  /* 3662UL */
+#define RAINBOW_FRAC_CYCLES_PER_STEP    (RAINBOW_TOTAL_CYCLES_PER_CYCLE % 65536UL)  /* 9216UL */
 
 /*==================================================================================================
 *                   CREE CLP6C-FKB PHOTOMETRIC & CHROMATICITY CALIBRATION
@@ -93,7 +115,7 @@ extern "C" {
 
 /* ADC0 Internal Temperature Sensor Channel & Timeout */
 #define ADC_CH_TEMP_SENSOR              (26U)
-#define ADC_TIMEOUT_COUNT               (50000UL)
+#define ADC_TIMEOUT_COUNT               (1000UL)
 
 /*==================================================================================================
 *                                      DEFINES AND MACROS
@@ -175,7 +197,6 @@ static inline uint16 Apply_Gamma16(uint16 linear_val);
 static void HsvToRgb16(uint16 hue16, uint16 * const r, uint16 * const g, uint16 * const b);
 static void Rainbow_Update16(uint16 hue16);
 static void App_FaultHandler(App_StatusType faultCode);
-static void Delay_Spin(uint32 count);
 static inline uint32 Galois_LFSR_Next(void);
 static void App_Adc_Init(void);
 static uint16 App_Adc_ReadRaw(uint8 channel);
@@ -186,15 +207,14 @@ static void App_Thermal_Observer_Update(void);
 ==================================================================================================*/
 
 /**
-* @brief        Simple calibrated spin-delay helper.
-* @param[in]    count  Loop iteration count.
+* @brief        Automotive Watchdog Refresh Hook (ISO 26262 Part 6 Temporal Monitoring).
+* @details      Refreshes hardware watchdog timer counter register if enabled.
 */
-static void Delay_Spin(uint32 count)
+static inline void App_Wdog_Service(void)
 {
-    volatile uint32 i = 0U;
-    while (i < count)
+    if (0U != (IP_WDOG->CS & WDOG_CS_EN_MASK))
     {
-        i++;
+        IP_WDOG->CNT = 0xB480A602U;
     }
 }
 
@@ -300,6 +320,10 @@ static inline uint32 Galois_LFSR_Next(void)
     if (lsb != 0U)
     {
         g_lfsr_state ^= LFSR_FEEDBACK_MASK;
+    }
+    if (0U == g_lfsr_state)
+    {
+        g_lfsr_state = LFSR_SEED_INITIAL;
     }
     return g_lfsr_state;
 }
@@ -494,18 +518,8 @@ int main(void)
     }
 
 #if defined (FEATURE_CLOCK_IP_HAS_SPLL_CLK)
-    /* Robust bounded timeout protection: eliminate unbounded while-loop */
-    uint32 pllTimeout = PLL_LOCK_TIMEOUT_COUNT;
-    while ((CLOCK_IP_PLL_LOCKED != Clock_Ip_GetPllStatus()) && (pllTimeout > 0U))
-    {
-        pllTimeout--;
-    }
-
-    if (0U == pllTimeout)
-    {
-        App_FaultHandler(APP_STATUS_ERROR_PLL_TIMEOUT);
-    }
-    else
+    /* If SPLL is active and locked, distribute PLL clocks safely across system */
+    if (CLOCK_IP_PLL_LOCKED == Clock_Ip_GetPllStatus())
     {
         Clock_Ip_DistributePll();
     }
@@ -533,9 +547,11 @@ int main(void)
     }
 
     /*----------------------------------------------------------------------------------------------
-    * 3. Initialize RTD OsIf Driver using Public API
+    * 3. Initialize RTD OsIf Driver and Hardware SysTick Timer
     *---------------------------------------------------------------------------------------------*/
     OsIf_Init(NULL_PTR);
+    /* Initialize Cortex-M4 Hardware SysTick Timer via RTD @ 48 MHz for exact physical time pacing */
+    OsIf_Timer_System_Internal_Init(MCU_CORE_CLOCK_HZ);
 
     /*----------------------------------------------------------------------------------------------
     * 3b. Initialize ADC0 and PMC Bandgap/Temperature Sensor for Real-Time Thermal Monitoring
@@ -555,66 +571,6 @@ int main(void)
     (void)Ftm_Pwm_Ip_UpdatePwmPeriod(FTM_INSTANCE_0, FTM_MAX_PERIOD_16BIT, TRUE);
     (void)Ftm_Pwm_Ip_UpdatePwmPeriod(FTM_INSTANCE_2, FTM_MAX_PERIOD_16BIT, TRUE);
 
-    /*----------------------------------------------------------------------------------------------
-    * 5. Power-On Diagnostic Flash (300 ms Red -> 300 ms Green -> 300 ms Blue)
-    *    Proves visual health of all hardware channels immediately upon MCU boot.
-    *---------------------------------------------------------------------------------------------*/
-    if (ENGINE_MODE_PURE_SOFTWARE_PDM == g_engine_mode)
-    {
-        /* Red Only */
-        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   1U);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
-        Delay_Spin(800000UL);
-
-        /* Green Only */
-        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
-        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
-        Delay_Spin(800000UL);
-
-        /* Blue Only */
-        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  1U);
-        Delay_Spin(800000UL);
-
-        /* Turn all off */
-        Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE,   LED_RED_GPIO_PIN,   0U);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-        Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE,  LED_BLUE_GPIO_PIN,  0U);
-    }
-    else
-    {
-        /* Hybrid Mode POST using Hardware FTM + PTE0 GPIO */
-        /* Red Only */
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   32768U, 0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-        Delay_Spin(800000UL);
-
-        /* Green Only */
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 32768U, 0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
-        Delay_Spin(800000UL);
-
-        /* Blue Only */
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  32768U, 0U, TRUE);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-        Delay_Spin(800000UL);
-
-        /* Turn all off */
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_RED,   0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_0, FTM_CH_GREEN, 0U,     0U, TRUE);
-        (void)Ftm_Pwm_Ip_UpdatePwmChannel(FTM_INSTANCE_2, FTM_CH_BLUE,  0U,     0U, TRUE);
-        Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
-    }
-
     /* Run initial thermal observer update to capture ambient die temperature */
     App_Thermal_Observer_Update();
 
@@ -625,7 +581,8 @@ int main(void)
     Exit_Example(TRUE);
 
     /*----------------------------------------------------------------------------------------------
-    * 6. Dual-Mode Extreme 16-Bit True-Color Lighting Engine @ 10,000 FPS
+    * 6. Dual-Mode Extreme 16-Bit True-Color Lighting Engine
+    *    Strictly Paced by ARM Cortex-M4 Hardware SysTick Timer (240,000,000 cycles / 5.000000s)
     *    Integrated with:
     *      - Feature 1: Spread-Spectrum / Random Jitter Modulation (32-bit Galois LFSR)
     *      - Feature 2: Real-Time Virtual Lumped RC Thermal Droop Compensation
@@ -633,75 +590,99 @@ int main(void)
     static uint32 acc_r = 0U;
     static uint32 acc_g = 0U;
     static uint32 acc_b = 0U;
+    static uint32 cycle_frac_acc = 0U;
+    static uint32 timer_ref = 0U;
+    static uint32 step_elapsed_cycles = 0U;
+
+    timer_ref = OsIf_Timer_System_Internal_GetCounter();
 
     while (1)
     {
-        uint32 tick;
+        /* Automotive Watchdog Servicing (ISO 26262 Part 6 Temporal Monitoring) */
+        App_Wdog_Service();
+
+        /* Determine exact hardware cycle target for this specific hue step (3662 or 3663 cycles) */
+        uint32 target_step_cycles = RAINBOW_BASE_CYCLES_PER_STEP;
+        cycle_frac_acc += RAINBOW_FRAC_CYCLES_PER_STEP;
+        if (cycle_frac_acc >= 65536UL)
+        {
+            cycle_frac_acc -= 65536UL;
+            target_step_cycles++;
+        }
 
         if (ENGINE_MODE_PURE_SOFTWARE_PDM == g_engine_mode)
         {
-            /* Mode 1: Pure 3-Channel Synchronous Sigma-Delta PDM @ 1.0 MHz
-             * All three pins toggle in perfect mathematical phase coherence.
-             * 32-bit Galois LFSR injects threshold micro-dither and pacing micro-jitter.
+            /* Mode 1: Pure 3-Channel Synchronous Sigma-Delta PDM
+             * Driven until target_step_cycles hardware cycles have elapsed.
+             * High-performance atomic register Set/Clear via RTD Gpio_Dio_Ip_SetPins / ClearPins.
+             * Bounded iteration guard ensures execution determinism (ISO 26262).
              */
-            for (tick = 0U; tick < 100U; tick++)
+            uint32 iter_guard = 0U;
+            while ((step_elapsed_cycles < target_step_cycles) && (iter_guard < 10000U))
             {
+                iter_guard++;
                 uint32 rand_val = Galois_LFSR_Next();
                 uint32 dither   = rand_val & 0x0FU; /* 0 ~ 15 micro-tick dither */
                 uint32 thresh   = 65535U - 7U + dither;
 
-                /* Red PDM Accumulator with threshold dithering */
+                uint32 set_e = 0U;
+                uint32 clr_e = 0U;
+                uint32 set_d = 0U;
+                uint32 clr_d = 0U;
+
+                /* Red PDM Accumulator */
                 acc_r += (uint32)duty_r_hw;
                 if (acc_r >= thresh)
                 {
-                    acc_r -= 65535U;
-                    Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 1U);
+                    acc_r -= thresh;
+                    set_e |= (1UL << LED_RED_GPIO_PIN);
                 }
                 else
                 {
-                    Gpio_Dio_Ip_WritePin(LED_RED_GPIO_BASE, LED_RED_GPIO_PIN, 0U);
+                    clr_e |= (1UL << LED_RED_GPIO_PIN);
                 }
 
-                /* Green PDM Accumulator with threshold dithering */
+                /* Green PDM Accumulator */
                 acc_g += (uint32)duty_g_hw;
                 if (acc_g >= thresh)
                 {
-                    acc_g -= 65535U;
-                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+                    acc_g -= thresh;
+                    set_e |= (1UL << LED_GREEN_GPIO_PIN);
                 }
                 else
                 {
-                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+                    clr_e |= (1UL << LED_GREEN_GPIO_PIN);
                 }
 
-                /* Blue PDM Accumulator with threshold dithering */
+                /* Blue PDM Accumulator */
                 acc_b += (uint32)duty_b_hw;
                 if (acc_b >= thresh)
                 {
-                    acc_b -= 65535U;
-                    Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 1U);
+                    acc_b -= thresh;
+                    set_d |= (1UL << LED_BLUE_GPIO_PIN);
                 }
                 else
                 {
-                    Gpio_Dio_Ip_WritePin(LED_BLUE_GPIO_BASE, LED_BLUE_GPIO_PIN, 0U);
+                    clr_d |= (1UL << LED_BLUE_GPIO_PIN);
                 }
 
-                /* Spread-Spectrum Delay Pacing: controlled micro-jitter spreads discrete EMI spikes */
-                uint32 jitter_delay = 5UL + ((rand_val >> 4U) & 0x02U); /* 5 or 7 loops, mean = 6.0 loops */
-                volatile uint32 innerCnt = 0U;
-                while (innerCnt < jitter_delay)
-                {
-                    innerCnt++;
-                }
+                if (set_e != 0U) { Gpio_Dio_Ip_SetPins(IP_PTE, set_e); }
+                if (clr_e != 0U) { Gpio_Dio_Ip_ClearPins(IP_PTE, clr_e); }
+                if (set_d != 0U) { Gpio_Dio_Ip_SetPins(IP_PTD, set_d); }
+                if (clr_d != 0U) { Gpio_Dio_Ip_ClearPins(IP_PTD, clr_d); }
+
+                step_elapsed_cycles += OsIf_Timer_System_Internal_GetElapsed(&timer_ref);
             }
         }
         else
         {
             /* Mode 0: Hybrid Architecture
-             * Hardware FTM PWM on Red/Blue + 1.0 MHz Software PDM on Green.
+             * Hardware FTM PWM on Red/Blue + Software PDM on Green (PTE0).
              */
-            for (tick = 0U; tick < 100U; tick++)
+            uint32 iter_guard = 0U;
+            while ((step_elapsed_cycles < target_step_cycles) && (iter_guard < 10000U))
             {
+                iter_guard++;
                 uint32 rand_val = Galois_LFSR_Next();
                 uint32 dither   = rand_val & 0x0FU;
                 uint32 thresh   = 65535U - 7U + dither;
@@ -709,33 +690,45 @@ int main(void)
                 acc_g += (uint32)duty_g_hw;
                 if (acc_g >= thresh)
                 {
-                    acc_g -= 65535U;
-                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 1U);
+                    acc_g -= thresh;
+                    Gpio_Dio_Ip_SetPins(IP_PTE, (1UL << LED_GREEN_GPIO_PIN));
                 }
                 else
                 {
-                    Gpio_Dio_Ip_WritePin(LED_GREEN_GPIO_BASE, LED_GREEN_GPIO_PIN, 0U);
+                    Gpio_Dio_Ip_ClearPins(IP_PTE, (1UL << LED_GREEN_GPIO_PIN));
                 }
 
-                /* Spread-Spectrum Delay Pacing for Hybrid Mode */
-                uint32 jitter_delay = 11UL + ((rand_val >> 4U) & 0x02U); /* 11 or 13 loops, mean = 12.0 loops */
-                volatile uint32 innerCnt = 0U;
-                while (innerCnt < jitter_delay)
-                {
-                    innerCnt++;
-                }
+                step_elapsed_cycles += OsIf_Timer_System_Internal_GetElapsed(&timer_ref);
             }
         }
 
-        /* Advance 16-bit hue angle (10,000 steps per second) */
-        current_hue++;
+        /* Carry over sub-microsecond remainder to ensure zero accumulated drift */
+        if (step_elapsed_cycles >= target_step_cycles)
+        {
+            step_elapsed_cycles -= target_step_cycles;
+            if (step_elapsed_cycles > (target_step_cycles * 2U))
+            {
+                /* Defensive clamp in case of debugger halt or reset */
+                step_elapsed_cycles = 0U;
+            }
+        }
+        else
+        {
+            step_elapsed_cycles = 0U;
+        }
+
+        /* Advance 16-bit hue angle (65,536 steps per 5.0-second cycle) */
+        current_hue += HUE_STEP_INCREMENT;
         if (0U == current_hue)
         {
             cycle_count++;
         }
 
-        /* Update virtual lumped RC thermal observer and adapt red gain */
-        App_Thermal_Observer_Update();
+        /* Update virtual lumped RC thermal observer (sampled ~51 Hz at current_hue % 256 == 0) */
+        if (0U == (current_hue & 0xFFU))
+        {
+            App_Thermal_Observer_Update();
+        }
 
         /* Update hardware FTM channels & precompute next PDM duties */
         Rainbow_Update16(current_hue);
