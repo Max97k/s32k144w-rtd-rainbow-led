@@ -1,0 +1,43 @@
+# ==============================================================================
+# S32DS / Eclipse Build Artifacts
+# ==============================================================================
+Debug_FLASH/
+Debug_RAM/
+Release/
+*.elf
+*.o
+*.d
+*.map
+*.args
+*.hex
+*.bin
+*.s19
+
+# ==============================================================================
+# S32 Configuration Tools (MEX) Generated Code
+# (Regenerated locally via S32 Configuration Tool -> Update Code)
+# ==============================================================================
+generate/
+
+# ==============================================================================
+# NXP Proprietary RTD Source Code
+# (Supplied automatically by user's local S32DS Platform SDK installation)
+# ==============================================================================
+RTD/
+
+# ==============================================================================
+# Eclipse / S32DS Workspace & User Specific Settings
+# ==============================================================================
+.metadata/
+.settings/language.settings.xml
+.settings/org.eclipse.core.resources.prefs
+
+# ==============================================================================
+# Temporary Dumps & Tool Reports
+# ==============================================================================
+*.bak
+ClockConfigurationMappings.txt
+ClockYaml.txt
+csv_output.csv
+html_report_Pins.html
+.default_mex
