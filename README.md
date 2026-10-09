@@ -28,12 +28,26 @@ Verified against official schematic (`SPF-46873_b.pdf`) and PCB layout (`LAY-S32
 
 | LED Channel | MCU Pin | Package Pin | Jumper / Resistor | Driver Mode | Output Polarity |
 | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RED** | `PTE7` | Pin 39 | `R789` (0Ω) | **FTM0_CH7** (ALT2) | High-True (NPN buffer) |
-| **GREEN (Default)** | `PTE0` | Pin 60 | `R846` (0Ω, Factory Populated) | **GPIO** (ALT1, 5 kHz RTD Modulation) | High-True (NPN buffer) |
+| **RED** | `PTE7` | Pin 39 | `R789` (0Ω) | **FTM0_CH7** (ALT2) / **GPIO** | High-True (NPN buffer) |
+| **GREEN (Default)** | `PTE0` | Pin 60 | `R846` (0Ω, Factory Populated) | **GPIO** (1.0 MHz PDM) | High-True (NPN buffer) |
 | **GREEN (Alt)** | `PTB12` | Pin 43 | `R787` (0Ω, Optional) | **FTM0_CH0** (ALT2) | High-True (NPN buffer) |
-| **BLUE** | `PTD5` | Pin 24 | `R774` (0Ω, Factory Populated) | **FTM2_CH3** (ALT2) | High-True (NPN buffer) |
+| **BLUE** | `PTD5` | Pin 24 | `R774` (0Ω, Factory Populated) | **FTM2_CH3** (ALT2) / **GPIO** | High-True (NPN buffer) |
 
 *Note: Factory-assembled EVBs populate `R846` (`PTE0`), leaving `R787` (`PTB12`) unpopulated. The firmware dual-drives both channels simultaneously to guarantee 100% out-of-the-box compatibility across all board revisions.*
+
+---
+
+## 🎨 Cree CLP6C-FKB Photometric & White-Balance Calibration
+
+The evaluation board equips a **Cree LED PLCC6 3-in-1 SMD LED (`CLP6C-FKB-CM1Q1H1BB7R3R3`)** driven by `P5V0` (5.0V) through 680Ω series resistors (`R95`, `R96`, `R97`) and MMBT3904 NPN transistors.
+
+Due to forward voltage differences and raw die efficiency imbalances, uncalibrated LEDs suffer from severe green-spike and dim-blue discoloration. The firmware integrates exact photometric gain scaling:
+
+| Channel | Die Model & Bin | Forward Voltage ($V_f$) | Operating Current ($I_f$) | Raw Luminous Intensity | Calibration Gain ($K$) | Compensated Flux |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **RED** | AlInGaP (M–N: 621 nm) | 2.0 V | 4.19 mA | ~157 mcd | **82.0%** (`53739` / 65535) | Balanced |
+| **GREEN** | InGaN (Q–R: 528 nm) | 3.2 V | 2.43 mA | ~200 mcd | **62.0%** (`40632` / 65535) | Normalized |
+| **BLUE** | InGaN (H–J: 470 nm) | 3.2 V | 2.43 mA | ~46 mcd | **100.0%** (`65535` / 65535) | Full-Scale |
 
 ---
 

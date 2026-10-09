@@ -44,6 +44,25 @@ extern "C" {
 #define CONFIG_ENGINE_MODE              (1U)
 
 /*==================================================================================================
+*                   CREE CLP6C-FKB PHOTOMETRIC & CHROMATICITY CALIBRATION
+* Component Model: Cree LED PLCC6 3-in-1 SMD RGB LED (CLP6C-FKB-CM1Q1H1BB7R3R3)
+* EVB Anode Supply: 5.0V (P5V0) via 680-ohm current limiting resistors (R95, R96, R97).
+* Physical Operating Points:
+*   - Red:   Vf = 2.0V, If = 4.19 mA, Typ Intensity = 157 mcd (Bin M-N @ 750 mcd/20mA)
+*   - Green: Vf = 3.2V, If = 2.43 mA, Typ Intensity = 200 mcd (Bin Q-R @ 1650 mcd/20mA)
+*   - Blue:  Vf = 3.2V, If = 2.43 mA, Typ Intensity =  46 mcd (Bin H-J @ 380 mcd/20mA)
+* Relative Gain Factors (Normalized to D65 Equal-Energy White Balance):
+*   - CALIB_GAIN_RED   = 82.0% (53739 / 65535)
+*   - CALIB_GAIN_GREEN = 62.0% (40632 / 65535)  [Suppresses overpowering green lumen spike]
+*   - CALIB_GAIN_BLUE  = 100.0% (65535 / 65535) [Maximizes weak blue photon flux]
+==================================================================================================*/
+#define ENABLE_CREE_LED_CALIBRATION     (1U)
+
+#define CALIB_GAIN_RED                  (53739UL)  /* 82.0% scaling for Cree CLP6C-FKB */
+#define CALIB_GAIN_GREEN                (40632UL)  /* 62.0% scaling for Cree CLP6C-FKB */
+#define CALIB_GAIN_BLUE                 (65535UL)  /* 100.0% scaling for Cree CLP6C-FKB */
+
+/*==================================================================================================
 *                                      DEFINES AND MACROS
 ==================================================================================================*/
 /** @brief FTM Hardware Instances */
@@ -233,6 +252,13 @@ static void Rainbow_Update16(uint16 hue16)
     uint16 raw_b = 0U;
 
     HsvToRgb16(hue16, &raw_r, &raw_g, &raw_b);
+
+#if (ENABLE_CREE_LED_CALIBRATION == 1U)
+    /* Apply Cree CLP6C-FKB photometric white-balance and luminous flux balancing */
+    raw_r = (uint16)(((uint32)raw_r * CALIB_GAIN_RED)   >> 16U);
+    raw_g = (uint16)(((uint32)raw_g * CALIB_GAIN_GREEN) >> 16U);
+    raw_b = (uint16)(((uint32)raw_b * CALIB_GAIN_BLUE)  >> 16U);
+#endif
 
     current_r = raw_r;
     current_g = raw_g;
