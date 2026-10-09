@@ -1,218 +1,243 @@
-# S32K144W Automotive RTD Hardware FTM PWM Rainbow LED Engine
-### 車規級 NXP S32K144W 即時驅動軟硬體混合彩虹 LED 控制引擎
+# S32K144W Automotive RTD Rainbow LED Engine
 
-<p align="center">
-  <a href="#english"><b>English Documentation</b></a> &nbsp;|&nbsp; 
-  <a href="#繁體中文"><b>繁體中文說明文件</b></a>
-</p>
+[![Target: NXP S32K144W](https://img.shields.io/badge/Target-NXP%20S32K144W-005a9c.svg)](https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/s32k-automotive-mcus/s32k1-microcontrollers-for-general-purpose:S32K1)
+[![Core: Arm Cortex-M4F](https://img.shields.io/badge/Core-Arm%C2%AE%20Cortex%C2%AE--M4F%20%40%2080MHz-blue.svg)](https://www.arm.com/products/silicon-ip-cpu/cortex-m/cortex-m4)
+[![RTD: 3.0.0 (AUTOSAR 4.7)](https://img.shields.io/badge/RTD-3.0.0%20(AUTOSAR%C2%AE%204.7)-orange.svg)](https://www.nxp.com)
+[![Toolchain: GCC 10.2](https://img.shields.io/badge/Toolchain-GCC%2010.2%20(0%20errors)-brightgreen.svg)](https://gcc.gnu.org)
+[![EMC: CISPR 25 Class 5](https://img.shields.io/badge/EMC-CISPR%2025%20Spread--Spectrum-purple.svg)](https://www.iec.ch)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Target-NXP%20S32K144W-005a9c.svg" alt="Target">
-  <img src="https://img.shields.io/badge/Core-Arm%C2%AE%20Cortex%C2%AE--M4F%20%40%2080MHz-blue.svg" alt="Core">
-  <img src="https://img.shields.io/badge/IDE-S32%20Design%20Studio%203.6.11-brightgreen.svg" alt="IDE">
-  <img src="https://img.shields.io/badge/RTD-RTD%203.0.0%20(AUTOSAR%C2%AE%204.7)-orange.svg" alt="RTD">
-  <img src="https://img.shields.io/badge/LED-Cree%C2%AE%20CLP6C--FKB-red.svg" alt="LED">
-  <img src="https://img.shields.io/badge/EMC-CISPR%2025%20Spread--Spectrum-purple.svg" alt="EMC">
-</p>
+English | [繁體中文](README_zh.md)
 
 ---
 
-<a name="english"></a>
-# English
+An automotive production-grade Rainbow LED firmware engine developed for the **NXP Semiconductors® S32K144W Evaluation Board (`XS32K14WEVB-Q064`)**.
 
-## 1. Overview & Architecture
-
-This repository hosts an automotive production-grade Rainbow LED firmware engine tailored for the **NXP Semiconductors® S32K144W-Q064 Evaluation Board (`XS32K14WEVB-Q064`)**.
-
-Operating strictly on official **NXP Real Time Drivers (RTD 3.0.0)** public APIs and **S32 Configuration Tools (MEX)** architecture, the firmware generates a seamless $0^\circ \sim 360^\circ$ full-spectrum HSV color-sweep at **10,000 FPS**. It addresses high-frequency electromagnetic interference (EMI) and LED thermal droop using advanced digital modulation algorithms.
-
-### Key Highlights
-* **100% Official NXP RTD Driver Layer**: Powered by AUTOSAR® 4.7 standard compliant APIs (`Clock_Ip`, `Port_Ci_Port_Ip`, `Ftm_Pwm_Ip`, `Gpio_Dio_Ip`, `OsIf`). Zero direct register hacks.
-* **Dual-Engine Architecture (`CONFIG_ENGINE_MODE`)**:
-  * **Mode 1 (`CONFIG_ENGINE_MODE = 1`) — Pure 3-Channel Synchronous 1.0 MHz PDM**: All Red, Green, and Blue channels run on a 1.0 MHz Sigma-Delta PDM engine for zero phase distortion.
-  * **Mode 0 (`CONFIG_ENGINE_MODE = 0`) — Hybrid FTM PWM + PDM**: Hardware 16-bit FTM PWM drives Red & Blue while 1.0 MHz software PDM drives Green.
-* **Photometric Calibration for Cree® CLP6C-FKB**: Normalized against datasheet luminous flux and $V_f$ differences under 5V / 680Ω driving conditions.
-* **32-Bit Galois LFSR Spread-Spectrum Modulation**: Spreads EMI energy across broadband spectrum to enhance automotive **CISPR 25 Class 5** compliance.
-* **Virtual RC Thermal Observer & Dynamic Red Droop Compensation**: Models LED junction temperature ($T_j$) combining on-chip ADC telemetry and instantaneous Joule heating ($I^2 \cdot R \cdot \text{duty}$), compensating for AlInGaP red thermal degradation ($-0.8\%/^\circ\text{C}$).
+Built strictly upon official **NXP Real Time Drivers (RTD 3.0.0)** public APIs and **S32 Configuration Tools (MEX)**, this project demonstrates high-rate color streaming, optical white-balance matching, electromagnetic emission reduction, and closed-loop junction temperature compensation on an automotive microcontroller.
 
 ---
 
-## 2. Hardware Specification & Pin Mapping
+## Table of Contents
 
-Verified against official schematic (`SPF-46873_b.pdf`) and PCB layout (`LAY-S32K14WEVB-Q064.pdf`):
+- [1. Overview](#1-overview)
+- [2. Key Features](#2-key-features)
+- [3. Hardware Setup & Pin Mapping](#3-hardware-setup--pin-mapping)
+- [4. Theory of Operation](#4-theory-of-operation)
+  - [4.1 Cree® CLP6C-FKB Photometric Normalization](#41-cree-clp6c-fkb-photometric-normalization)
+  - [4.2 1.0 MHz Sigma-Delta Pulse Density Modulation (PDM)](#42-10-mhz-sigma-delta-pulse-density-modulation-pdm)
+  - [4.3 Galois LFSR Spread-Spectrum Modulation](#43-galois-lfsr-spread-spectrum-modulation)
+  - [4.4 Virtual RC Thermal Observer & Dynamic Droop Compensation](#44-virtual-rc-thermal-observer--dynamic-droop-compensation)
+  - [4.5 Continuous 16-Bit Gamma 2.2 Interpolation](#45-continuous-16-bit-gamma-22-interpolation)
+- [5. Repository Structure](#5-repository-structure)
+- [6. Getting Started](#6-getting-started)
+  - [6.1 Prerequisites](#61-prerequisites)
+  - [6.2 Option A: Build and Debug via S32 Design Studio (IDE)](#62-option-a-build-and-debug-via-s32-design-studio-ide)
+  - [6.3 Option B: Headless Build and Flash via Command Line (CLI)](#63-option-b-headless-build-and-flash-via-command-line-cli)
+- [7. Configuration Options](#7-configuration-options)
+- [8. Trademarks & Legal Disclaimers](#8-trademarks--legal-disclaimers)
 
-| LED Channel | MCU Port | Package Pin | Jumper / Resistor | Driver Routing | Output Polarity |
-| :---: | :---: | :---: | :---: | :---: | :---: |
+---
+
+## 1. Overview
+
+Driving multi-color indicator or interior accent lighting in automotive environments presents three primary physical challenges:
+1. **Electromagnetic Emissions (CISPR 25)**: Fixed-frequency pulse-width modulation (PWM) concentrates energy into sharp harmonic spikes that interfere with AM/FM broadcast bands and onboard RF transceivers.
+2. **Thermal Droop & Color Shift**: Red AlInGaP LED dice degrade in luminous flux at approximately $-0.8\%/^\circ\text{C}$, whereas InGaN green/blue dice drop by only $-0.2\%/^\circ\text{C}$. Rising temperatures destroy calibrated white balance.
+3. **Stroboscopic & Rolling-Shutter Artifacts**: Low-frequency PWM (< 2 kHz) creates visible flickering when recorded by high-frame-rate or rolling-shutter cameras (e.g., ADAS driver monitoring cameras, backup displays).
+
+This project resolves these challenges by combining a **1.0 MHz first-order Sigma-Delta Pulse Density Modulation (PDM)** software core with a **32-bit Galois LFSR spread-spectrum dither**, an on-chip **ADC bandgap temperature observer**, and a real-time **virtual RC thermal observer**.
+
+---
+
+## 2. Key Features
+
+* **100% Official NXP RTD Architecture**: Built entirely with AUTOSAR® 4.7 / RTD 3.0.0 public driver modules (`Clock_Ip`, `Port_Ci_Port_Ip`, `Ftm_Pwm_Ip`, `Gpio_Dio_Ip`, `OsIf`). Zero direct register hacks or unsupported private symbols.
+* **Dual-Engine Operation (`CONFIG_ENGINE_MODE`)**:
+  * **Mode 1 (`CONFIG_ENGINE_MODE = 1`) — Pure 3-Channel Synchronous 1.0 MHz PDM**: Drives Red, Green, and Blue concurrently via software PDM for identical propagation delay and zero phase jitter.
+  * **Mode 0 (`CONFIG_ENGINE_MODE = 0`) — Hybrid FTM PWM + PDM**: Offloads Red and Blue to 16-bit FlexTimer (FTM) hardware PWM (1.22 kHz carrier) while handling Green via 1.0 MHz PDM.
+* **Photometric Calibration**: Explicitly normalized for the on-board **Cree® LED PLCC6 RGB LED (`CLP6C-FKB`)** powered through 680Ω series resistors from 5.0V.
+* **10 kHz Color Refresh Rate**: Transitions hue at 10,000 updates per second (100 µs frame slices) across 65,536 discrete hue steps ($0.0055^\circ$ angular resolution).
+* **CISPR 25 Spread-Spectrum Dithering**: Micro-tick pseudorandom jitter smears discrete harmonic peaks across a continuous broadband noise floor.
+* **Closed-Loop Virtual RC Thermal Droop Compensation**: Real-time junction temperature ($T_j$) estimation dynamically boosts red intensity with temperature to lock optical balance.
+* **Power-On Self-Test (POST)**: Autonomous RGB sequencing (Red 300 ms $\to$ Green 300 ms $\to$ Blue 300 ms) upon reset before entering the continuous rainbow loop.
+
+---
+
+## 3. Hardware Setup & Pin Mapping
+
+Verified against the official NXP schematic (`SPF-46873_b.pdf`) and PCB layout (`LAY-S32K14WEVB-Q064.pdf`):
+
+| Signal / Color | MCU Port | 64-LQFP Pin | Series Resistor | Hardware Routing | Output Polarity |
+| :--- | :---: | :---: | :---: | :--- | :---: |
 | **RED** | `PTE7` | Pin 39 | `R789` (0Ω) | **FTM0_CH7** (ALT2) / **GPIO** | Active-High (NPN Buffer) |
-| **GREEN (Default)** | `PTE0` | Pin 60 | `R846` (0Ω, Factory Populated) | **GPIO** (1.0 MHz PDM) | Active-High (NPN Buffer) |
-| **GREEN (Alt)** | `PTB12` | Pin 43 | `R787` (0Ω, DNP by default) | **FTM0_CH0** (ALT2) | Active-High (NPN Buffer) |
-| **BLUE** | `PTD5` | Pin 24 | `R774` (0Ω, Factory Populated) | **FTM2_CH3** (ALT2) / **GPIO** | Active-High (NPN Buffer) |
+| **GREEN (Default)** | `PTE0` | Pin 60 | `R846` (0Ω, Populated) | **GPIO** (1.0 MHz PDM) | Active-High (NPN Buffer) |
+| **GREEN (Alt)** | `PTB12` | Pin 43 | `R787` (0Ω, DNP) | **FTM0_CH0** (ALT2) | Active-High (NPN Buffer) |
+| **BLUE** | `PTD5` | Pin 24 | `R774` (0Ω, Populated) | **FTM2_CH3** (ALT2) / **GPIO** | Active-High (NPN Buffer) |
 
-> **Note**: On factory-assembled EVBs, `R846` is populated while `R787` is unpopulated. The firmware dual-drives both channels simultaneously to guarantee 100% out-of-the-box compatibility without PCB rework.
-
----
-
-## 3. Cree® CLP6C-FKB Photometric Calibration
-
-The EVB features a **Cree® LED PLCC6 3-in-1 SMD LED (`CLP6C-FKB-CM1Q1H1BB7R3R3`)** powered from `P5V0` (5.0V) through 680Ω series resistors (`R95`, `R96`, `R97`) and MMBT3904 NPN transistors.
-
-Uncalibrated RGB LEDs suffer from severe green-spike and dim-blue discoloration. The firmware integrates precise photometric gain scaling:
-
-| Channel | Die Material & Bin | Forward Voltage ($V_f$) | Operating Current ($I_f$) | Raw Luminous Intensity | Calibration Gain ($K$) | Balanced Status |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RED** | AlInGaP (M–N: 621 nm) | 2.0 V | 4.19 mA | ~157 mcd | **82.0%** (`53739` / 65535) | Photometrically Balanced |
-| **GREEN** | InGaN (Q–R: 528 nm) | 3.2 V | 2.43 mA | ~200 mcd | **62.0%** (`40632` / 65535) | Normalized to Blue |
-| **BLUE** | InGaN (H–J: 470 nm) | 3.2 V | 2.43 mA | ~46 mcd | **100.0%** (`65535` / 65535) | Full-Scale Reference |
+> **Hardware Compatibility Note**: Factory EVB units populate `R846` (`PTE0`) and leave `R787` (`PTB12`) unpopulated. The firmware dual-drives both pins simultaneously, ensuring full out-of-the-box operation on both unmodified and modified boards.
 
 ---
 
-## 4. Advanced Technical Features
+## 4. Theory of Operation
 
-1. **16-Bit Ultra-High True-Color Resolution**: 65,536 fine-grained discrete hue angles ($0.0055^\circ$ angular resolution) paired with full-scale 16-bit (0 ~ 65,535 ticks) hardware and software intensity channels yielding over 281 trillion theoretical color states.
-2. **10,000 FPS Color Refresh Rate**: Driven at a cinema-grade 10,000 frames per second (100 µs frame slices), rendering imperceptible sub-millisecond color transitions without visible stepping or color banding.
-3. **1.0 MHz Sigma-Delta Pulse Density Modulator (PDM)**: Uniformly disperses photon energy across time at 1,000,000 samples/sec, completely eliminating low-frequency PWM strobe flicker.
-4. **Continuous 16-Bit Gamma 2.2 Interpolation**: Implements a zero-division, zero-float linear interpolator evaluated against a 1025-point calibration curve, constraining non-linear perceptual error to $<0.005\%$ across the entire dynamic range.
-5. **32-Bit Galois LFSR Spread-Spectrum Modulation**: Integrates a single-cycle pseudo-random dithering mechanism into micro-tick execution, distributing discrete electromagnetic radiation spikes across a continuous broadband noise floor to achieve automotive CISPR 25 EMC compliance.
-6. **Closed-Loop Virtual RC Thermal Observer**: Models LED junction temperature ($T_j$) in real time by fusing S32K144 on-chip bandgap ADC temperature sensor telemetry with an instantaneous Joule dissipation differential observer ($I^2 \cdot R \cdot \text{duty}$).
-7. **Dynamic AlInGaP Red Thermal Droop Compensation**: Automatically computes and counteracts the physical $-0.8\%/^\circ\text{C}$ luminous flux degradation inherent to Cree AlInGaP red dice, locking color coordinates and preventing warm-color drift across thermal excursions.
-8. **Power-On Self-Test (POST)**: Flashes Red (300 ms) $\to$ Green (300 ms) $\to$ Blue (300 ms) upon MCU reset for instant physical hardware health verification before transitioning into seamless rainbow streaming.
+### 4.1 Cree® CLP6C-FKB Photometric Normalization
+
+The evaluation board equips a **Cree® LED PLCC6 3-in-1 SMD LED (`CLP6C-FKB-CM1Q1H1BB7R3R3`)** driven by `P5V0` (5.0V) through 680Ω resistors (`R95`, `R96`, `R97`) and MMBT3904 NPN transistors ($V_{ce(sat)} \approx 0.1\text{V}$).
+
+Due to semiconductor bandgap differences ($V_f$) and raw luminous intensity bins, driving each die with identical electrical duty results in an overwhelming green spike and an almost invisible blue channel:
+
+$$I_f = \frac{V_{CC} - V_f - V_{ce(sat)}}{R_{series}}$$
+
+| Channel | Die Material & Bin | Forward Voltage ($V_f$) | Operating Current ($I_f$) | Luminous Intensity | Calibration Gain ($K$) | Compensated Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **RED** | AlInGaP (M–N: 621 nm) | 2.0 V | 4.19 mA | ~157 mcd | **82.0%** (`53739` / 65535) | Photometrically matched |
+| **GREEN** | InGaN (Q–R: 528 nm) | 3.2 V | 2.43 mA | ~200 mcd | **62.0%** (`40632` / 65535) | Attenuated to prevent green flare |
+| **BLUE** | InGaN (H–J: 470 nm) | 3.2 V | 2.43 mA | ~46 mcd | **100.0%** (`65535` / 65535) | Full-scale reference |
+
+### 4.2 1.0 MHz Sigma-Delta Pulse Density Modulation (PDM)
+
+Traditional PWM clusters high states into a single continuous pulse per period, producing strong low-frequency harmonics. 
+
+The software PDM engine runs at 1.0 MHz (1 µs micro-ticks). Each channel maintains a 16-bit error accumulator:
+
+$$\text{accumulator} \leftarrow \text{accumulator} + \text{duty}_{16}$$
+
+If an overflow occurs ($\ge 65536$), the output pin is asserted high and $65536$ is subtracted; otherwise, it is pulled low. This disperses photon emissions uniformly across time, shifting quantization noise to high frequencies where human eyes and rolling-shutter sensors naturally filter it out.
+
+### 4.3 Galois LFSR Spread-Spectrum Modulation
+
+To meet **CISPR 25 Class 5** limits for vehicle broadcast protection, the micro-tick loop executes a 32-bit Galois Linear Feedback Shift Register (LFSR) with characteristic polynomial $x^{32} + x^{31} + x^{29} + x + 1$ (`0xD0000001`):
+
+```c
+uint32 lsb = g_lfsr_state & 1U;
+g_lfsr_state >>= 1U;
+if (lsb) {
+    g_lfsr_state ^= 0xD0000001UL;
+}
+```
+
+The low-order bits inject pseudorandom timing micro-jitter into the delay loop, smearing discrete clock harmonics into a uniform broadband noise floor.
+
+### 4.4 Virtual RC Thermal Observer & Dynamic Droop Compensation
+
+AlInGaP red dice experience thermal droop of approximately $-0.8\%/^\circ\text{C}$ relative to $25^\circ\text{C}$. 
+
+The firmware implements a real-time thermal observer:
+1. **Ambient Telemetry**: Decimates and reads the MCU on-chip bandgap temperature sensor via ADC0 Channel 26, filtered through a 1st-order IIR low-pass filter.
+2. **Joule Self-Heating Observer**: Computes instantaneous electrical power dissipation ($P = \sum I_k^2 \cdot R \cdot \text{duty}_k$) and feeds a virtual thermal RC model ($\tau \approx 1\text{ s}$, $R_{th} \approx 200^\circ\text{C/W}$).
+3. **Closed-Loop Gain Adaptation**:
+   $$T_j = T_{\text{mcu}} + \Delta T_{\text{self}}$$
+   $$\text{Gain}_{\text{Red}}(T_j) = \text{Gain}_{\text{base}} + (T_j - 25^\circ\text{C}) \times 430$$
+
+This boosts the red channel duty by up to $+21.8\%$ under elevated temperatures to maintain constant optical white balance.
+
+### 4.5 Continuous 16-Bit Gamma 2.2 Interpolation
+
+Human perception of light is non-linear ($\text{Perceived} \approx \text{Physical}^{1/2.2}$). The engine incorporates a 1025-point 16-bit calibration LUT with zero-division integer interpolation:
+
+$$\text{Output} = \text{LUT}[idx] + \frac{(\text{LUT}[idx+1] - \text{LUT}[idx]) \times rem}{64}$$
+
+Constrains luminance quantization error to $<0.005\%$ across the entire dynamic range.
 
 ---
 
-## 5. Build & Flash Workflows
+## 5. Repository Structure
 
-### Method A: S32 Design Studio (GUI)
-1. **Import Project**: Open S32DS 3.6.11 $\to$ **File** $\to$ **Import...** $\to$ **General** $\to$ **Existing Projects into Workspace** $\to$ Select `Gpio_Dio_Ip_Example_S32K144W`.
-2. **Generate Driver Code**: Right-click project $\to$ **S32 Configuration Tool** $\to$ **Update Code**.
-3. **Build Project**: Click **Project** $\to$ **Build Project** (Verify 0 Errors, 0 Warnings).
-4. **Flash & Run**: Open **Run** $\to$ **Debug Configurations...** $\to$ Select `Gpio_Dio_Ip_Example_S32K144W_Debug_FLASH_PNE` $\to$ Click **Debug**.
-
-### Method B: Headless Command-Line Interface (CLI Automation)
-Build and flash completely from PowerShell / Bash without launching the Eclipse GUI:
-```powershell
-# 1. Setup toolchain environment (MSYS2 Make + S32DS GCC 10.2)
-$env:PATH = "C:\NXP\S32DS.3.6.11\S32DS\build_tools\msys32\usr\bin;C:\NXP\S32DS.3.6.11\S32DS\build_tools\gcc_v10.2\gcc-10.2-arm32-eabi\bin;" + $env:PATH
-
-# 2. Compile ELF binary headlessly
-cd c:\Users\b\workspaceS32DS.3.6.11\Gpio_Dio_Ip_Example_S32K144W\Debug_FLASH
-make -j8 all
-
-# 3. Flash to target board via OpenSDA PEMicro
-python C:\Users\b\.gemini\antigravity\brain\ca81b627-910b-4c1e-ba2f-fe3cc388fe3a\scratch\flash_target.py
+```
+.
+├── board/                         # Pin and clock initialization configs (MEX generated)
+│   ├── Port_Ci_Port_Ip_Cfg.c
+│   └── Port_Ci_Port_Ip_Cfg.h
+├── generate/                      # RTD module drivers and configuration structures
+│   ├── include/                   # Clock, FTM, OsIf configuration headers
+│   └── src/                       # Clock_Ip_Cfg.c, Ftm_Pwm_Ip_VS_0_PBcfg.c, OsIf_Cfg.c
+├── include/                       # Application headers
+│   ├── check_example.h
+│   └── gamma_lut_1025.h           # 1025-point 16-bit Gamma 2.2 lookup table
+├── Project_Settings/
+│   ├── Debugger/                  # PEMicro GDB launch configurations
+│   ├── Linker_Files/              # S32K144W Flash & RAM linker scripts (.ld)
+│   └── Startup_Code/              # CMSIS startup, vector table, NVIC configuration
+├── RTD/                           # NXP Real Time Drivers source files (AUTOSAR 4.7)
+├── src/
+│   └── main.c                     # Application entry, PDM engine, thermal observer
+├── tests/                         # Verification test scripts
+├── Gpio_Dio_Ip_Example.mex        # S32 Configuration Tools configuration file
+└── README.md                      # Project documentation
 ```
 
 ---
 
-<a name="繁體中文"></a>
-# 繁體中文
+## 6. Getting Started
 
-## 1. 專案概述與系統架構
+### 6.1 Prerequisites
 
-本專案為專為 **恩智浦半導體 (NXP Semiconductors®) S32K144W-Q064 評估板 (`XS32K14WEVB-Q064`)** 量身打造的車規級全光譜彩虹 LED 控制韌體。
-
-全案嚴格基於官方 **NXP Real Time Drivers (RTD 3.0.0)** 公共驅動 API 與 **S32 Configuration Tools (MEX)** 程式碼生成架構，在 **10,000 FPS** 的超高色彩更新率下實現 $0^\circ \sim 360^\circ$ HSV 全光譜平滑漸變。本韌體針對車載照明最嚴苛的高頻電磁干擾 (EMI) 與 LED 晶粒熱衰減 (Thermal Droop) 問題，導入了先進的數位訊號調變與自適應補償演算法。
-
-### 核心技術特點
-* **100% 官方 NXP RTD 驅動架構**：嚴格遵循 AUTOSAR® 4.7 標準規範 API（`Clock_Ip`、`Port_Ci_Port_Ip`、`Ftm_Pwm_Ip`、`Gpio_Dio_Ip`、`OsIf`），徹底杜絕任何私有暫存器直接操作（Zero Bare-Metal Register Hack）。
-* **雙引擎彈性架構切換旗標 (`CONFIG_ENGINE_MODE`)**：
-  * **模式 1 (`CONFIG_ENGINE_MODE = 1`) — 純 3 通道同步 1.0 MHz PDM**：紅、綠、藍三通道全由 1.0 MHz Sigma-Delta 脈衝密度調變引擎驅動，達到數學級的絕對相位同調與微光譜無畸變。
-  * **模式 0 (`CONFIG_ENGINE_MODE = 0`) — 硬體 FTM PWM + PDM 混合架構**：紅、藍通道由晶片內部 16-bit 硬體 FTM PWM 驅動，綠燈由 1.0 MHz PDM 補足，達成周邊硬體卸載與最高相容性。
-* **Cree® CLP6C-FKB 專用光度學增益校正**：根據 5V / 680Ω 驅動電路實測與原廠數據手冊之順向導通電壓 ($V_f$)、發光強度差異進行三通道正規化，根除綠光過強、藍光黯淡之偏色問題。
-* **32-Bit 伽羅瓦 LFSR 展頻隨機調變 (Spread-Spectrum Modulation)**：在微週期層級注入偽隨機微小抖動，將離散高頻 EMI 能量峰值打散至連續寬頻底噪中，顯著提升車規 **CISPR 25 Class 5** 電磁相容性。
-* **閉環虛擬 RC 晶面熱模型與紅光自適應動態熱補償**：結合 S32K144 晶片內部 ADC 帶隙溫度遙測與瞬間焦耳熱消耗動態微分觀測器 ($I^2 \cdot R \cdot \text{duty}$)，即時預估 LED 內部晶面接面溫度 ($T_j$)，並在動態中反向精準抵消 AlInGaP 紅光每度 $-0.8\%$ 之物理熱衰，鎖定色彩白平衡。
+* **Hardware**:
+  * NXP `XS32K14WEVB-Q064` evaluation board
+  * Micro-USB cable
+* **Software**:
+  * NXP S32 Design Studio for S32 Platform **v3.6.11**
+  * NXP Real Time Drivers for S32K1 / S32M24 **RTD 3.0.0**
+  * P&E Microcomputer Systems OpenSDA USB Drivers
 
 ---
 
-## 2. 硬體電路與接腳映射驗證
+### 6.2 Option A: Build and Debug via S32 Design Studio (IDE)
 
-本專案接腳定義已完全通過官方硬體電路圖 (`SPF-46873_b.pdf`) 與 PCB Layout (`LAY-S32K14WEVB-Q064.pdf`) 之多重交叉比對驗證：
-
-| LED 顏色通道 | MCU 內部 Port | 64-LQFP 封裝腳位 | 跳線 / 零歐姆電阻 | 驅動模式配置 | 輸出邏輯電平 |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **紅光 (RED)** | `PTE7` | Pin 39 | `R789` (0Ω) | **FTM0_CH7** (ALT2) / **GPIO** | 正邏輯 High-True (NPN 緩衝) |
-| **綠光 (GREEN, 預設)** | `PTE0` | Pin 60 | `R846` (0Ω, 出廠已焊接) | **GPIO** (1.0 MHz 軟體 PDM) | 正邏輯 High-True (NPN 緩衝) |
-| **綠光 (GREEN, 備選)** | `PTB12` | Pin 43 | `R787` (0Ω, 出廠未焊接) | **FTM0_CH0** (ALT2) | 正邏輯 High-True (NPN 緩衝) |
-| **藍光 (BLUE)** | `PTD5` | Pin 24 | `R774` (0Ω, 出廠已焊接) | **FTM2_CH3** (ALT2) / **GPIO** | 正邏輯 High-True (NPN 緩衝) |
-
-> **硬體相容性提示**：出廠標準評估板預先焊接了 `R846` (`PTE0`)，而連接至硬體 PWM 的 `R787` (`PTB12`) 預設為空焊 (DNP)。本專案韌體採取「雙綠光腳位同步驅動」架構，無論硬體有無跳線改造，皆能 100% 免改板隨插即用。
+1. Launch S32 Design Studio.
+2. Select **File $\to$ Import... $\to$ General $\to$ Existing Projects into Workspace**.
+3. Browse to this repository root and click **Finish**.
+4. In the Project Explorer, right-click the project and select **S32 Configuration Tool $\to$ Update Code** to generate the driver files.
+5. Click **Project $\to$ Build Project** (or press `Ctrl+B`). Verify build output reports `0 errors, 0 warnings`.
+6. Connect the board via USB (`J7`).
+7. Open **Run $\to$ Debug Configurations...**, select `Gpio_Dio_Ip_Example_S32K144W_Debug_FLASH_PNE`, and click **Debug**.
 
 ---
 
-## 3. Cree® CLP6C-FKB 光學特性與白平衡校正
+### 6.3 Option B: Headless Build and Flash via Command Line (CLI)
 
-評估板板載一顆 **Cree® LED PLCC6 三合一貼片型 RGB LED (`CLP6C-FKB-CM1Q1H1BB7R3R3`)**，由板上 `P5V0` (5.0V) 經由 680Ω 降壓限流電阻 (`R95`, `R96`, `R97`) 並透過 MMBT3904 NPN 電晶體共發射極接地驅動。
+The project can be built and flashed headlessly without launching the Eclipse GUI:
 
-若直接施加未校正之原始 PWM，綠燈會過於刺眼、藍燈則極度微弱。本專案精算各通道光度學比例，實施精準動態加權：
-
-| 通道顏色 | 晶粒半導體材料與分級 | 順向電壓 ($V_f$) | 工作驅動電流 ($I_f$) | 原始發光強度 (典型值) | 韌體增益加權係數 ($K$) | 補償後光學狀態 |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **紅光 (RED)** | AlInGaP (M–N: 621 nm) | 2.0 V | 4.19 mA | ~157 mcd | **82.0%** (`53739` / 65535) | 光學平衡 |
-| **綠光 (GREEN)** | InGaN (Q–R: 528 nm) | 3.2 V | 2.43 mA | ~200 mcd | **62.0%** (`40632` / 65535) | 基準正規化 |
-| **藍光 (BLUE)** | InGaN (H–J: 470 nm) | 3.2 V | 2.43 mA | ~46 mcd | **100.0%** (`65535` / 65535) | 全開基準參考 |
-
----
-
-## 4. 進階工程演算法解析
-
-1. **16-Bit 原生超高真實色彩解析度**：將 $360^\circ$ 色相環細分為 65,536 個離散步階（角解析度達 $0.0055^\circ$），搭配 16-bit 全範圍亮度通道，理論色彩表現力超過 281 兆色。
-2. **10,000 FPS 電影級畫面刷新率**：以 100 µs 時間切片為單位平滑更新色彩，人眼完全無法察覺步進色階或色彩斷層。
-3. **1.0 MHz 脈衝密度調變 (Pulse Density Modulation, PDM)**：以每秒 100 萬次的高取樣率將光子能量均勻分散於時間軸，徹底根除傳統 PWM 在低頻下的頻閃與相機滾動快門條紋 (Rolling Shutter Effect)。
-4. **連續 16-Bit Gamma 2.2 查表線性插值**：以 1025 階校正曲線為骨幹，設計無除法、無浮點的高效整數線性插值演算法，在全動態範圍內將人眼非線性感知誤差壓低至 $<0.005\%$。
-5. **32-Bit 伽羅瓦 LFSR 展頻調變 (Spread-Spectrum Modulation)**：在 PDM 驅動核心內建單週期虛擬隨機抖動器，破壞固定切換頻率的諧波能量疊加，大幅降低高頻輻射峰值以符合汽車電子嚴格的 CISPR 25 EMC 規範。
-6. **閉環虛擬 RC 晶面熱模型 (Thermal Lumped Model)**：融合 S32K144 晶圓內建帶隙溫度感測器的 ADC 遙測讀數與瞬時焦耳熱消耗動態一階濾波觀測器 ($I^2 \cdot R \cdot \text{duty}$)，即時在線解算出 LED 晶面溫度 ($T_j$)。
-7. **AlInGaP 紅光自適應動態熱衰補償**：針對紅光晶粒溫度每上升 $1^\circ\text{C}$ 即損失約 $0.8\%$ 光通量的物理特性，即時自適應調整紅光驅動增益，徹底解決長時間高溫運作下的白平衡失真與色彩漂移。
-8. **開機自我檢測 (Power-On Self-Test, POST)**：微控制器重置後立即依序點亮 紅光 (300 ms) $\to$ 綠光 (300 ms) $\to$ 藍光 (300 ms)，提供視覺化的實體硬體狀態自我確認。
-
----
-
-## 5. 專案建置與燒錄指南
-
-### 方法 A：S32 Design Studio (IDE 圖形介面操作)
-1. **匯入專案**：開啟 S32DS 3.6.11 $\to$ 點選功能表 **File** $\to$ **Import...** $\to$ **General** $\to$ **Existing Projects into Workspace** $\to$ 選取專案目錄 `Gpio_Dio_Ip_Example_S32K144W`。
-2. **生成驅動原始碼**：在專案樹狀結構上按滑鼠右鍵 $\to$ **S32 Configuration Tool** $\to$ **Update Code**（自動依據 `Gpio_Dio_Ip_Example.mex` 生成 `generate/` 驅動程式庫）。
-3. **編譯專案**：點選 **Project** $\to$ **Build Project**（確認編譯結果為 0 Errors, 0 Warnings）。
-4. **燒錄除錯**：開啟 **Run** $\to$ **Debug Configurations...** $\to$ 選擇 `Gpio_Dio_Ip_Example_S32K144W_Debug_FLASH_PNE` $\to$ 按下 **Debug** 開始燒錄執行。
-
-### 方法 B：純命令列 Headless 自動化建置與燒錄 (CLI Pipeline)
-無需啟動 Eclipse 介面，直接於終端機（PowerShell 或 Bash）完成快速編譯與燒錄：
 ```powershell
-# 1. 配置建置工具鏈環境變數 (MSYS2 Make 與 S32DS GCC 10.2)
+# 1. Add S32DS build tools and compiler to PATH
 $env:PATH = "C:\NXP\S32DS.3.6.11\S32DS\build_tools\msys32\usr\bin;C:\NXP\S32DS.3.6.11\S32DS\build_tools\gcc_v10.2\gcc-10.2-arm32-eabi\bin;" + $env:PATH
 
-# 2. 透過 Makefile 進行無介面高速並行編譯
-cd c:\Users\b\workspaceS32DS.3.6.11\Gpio_Dio_Ip_Example_S32K144W\Debug_FLASH
+# 2. Invoke GNU Make in the build directory
+cd Debug_FLASH
 make -j8 all
 
-# 3. 透過 OpenSDA PEMicro Python 控制台直接將 ELF 燒入晶片 Flash
-python C:\Users\b\.gemini\antigravity\brain\ca81b627-910b-4c1e-ba2f-fe3cc388fe3a\scratch\flash_target.py
+# 3. Flash to target board using the headless PEMicro script
+python ../tests/flash_target.py
+```
+
+Expected build size output:
+```
+   text    data     bss     dec     hex filename
+  34612     412    5908   40932    9fe4 Gpio_Dio_Ip_Example_S32K144W.elf
 ```
 
 ---
 
-## 🏷️ Trademark & Intellectual Property Disclaimers / 商標與智慧財產權宣告
+## 7. Configuration Options
+
+Primary operational parameters can be adjusted in [`src/main.c`](file:///c:/Users/b/workspaceS32DS.3.6.11/Gpio_Dio_Ip_Example_S32K144W/src/main.c):
+
+| Configuration Macro | Default | Options | Description |
+| :--- | :---: | :---: | :--- |
+| `CONFIG_ENGINE_MODE` | `1U` | `0U`, `1U` | `1U`: Pure 3-Channel 1.0 MHz PDM.<br>`0U`: Hybrid 16-bit FTM PWM (Red/Blue) + 1.0 MHz PDM (Green). |
+| `HUE_STEP_INCREMENT` | `1U` | `1U` ~ `64U` | Hue advance per 100 µs frame slice (controls rainbow cycle speed). |
+| `LFSR_SEED_INITIAL` | `0x5A8E3B1CUL` | 32-bit uint | Initial state seed for the Galois LFSR spread-spectrum dither generator. |
+| `RED_DROOP_COMP_SLOPE` | `430` | int | Gain compensation slope (+430 counts/°C) for AlInGaP thermal degradation. |
+| `THERMAL_NOMINAL_TEMP_C`| `25` | int | Nominal calibration reference temperature in °C. |
+
+---
+
+## 8. Trademarks & Legal Disclaimers
 
 * **NXP®**, **S32 Platform**, **S32 Design Studio®**, **S32 Configuration Tools (MEX)**, and **Real Time Drivers (RTD)** are registered trademarks or trademarks of **NXP Semiconductors N.V.** and its subsidiaries.
 * **Arm®** and **Cortex®-M4F** are registered trademarks or trademarks of **Arm Limited** (or its subsidiaries) in the US and/or elsewhere.
-* **PEMicro®**, **OpenSDA**, and **Multilink** are trademarks or registered trademarks of **P&E Microcomputer Systems, Inc.**
-* **Cree® LED** is a registered trademark of **CreeLED, Inc.** / a **SMART Global Holdings (SGH)** company.
+* **PEMicro®**, **OpenSDA**, and **Multilink** are registered trademarks of **P&E Microcomputer Systems, Inc.**
+* **Cree® LED** is a registered trademark of **CreeLED, Inc.**, a **SMART Global Holdings (SGH)** company.
 * **AUTOSAR®** is a registered trademark of the **AUTOSAR Development Partnership**.
 * **MISRA®** and **MISRA C®** are registered trademarks of **The MISRA Consortium Limited**.
-* **CISPR** is a trademark of the **International Electrotechnical Commission (IEC)**.
-* All other product or brand names mentioned herein are the property of their respective owners.
-
----
-
-## 👥 Credits & AI Pair Programming Metrics / 開發數據與結對協作指標
-
-本專案由人類嵌入式工程師與人工智慧編碼智能體透過深度協作（Pair Programming）共同設計與實作。
-
-* **Lead Engineer**: [@Max97k](https://github.com/Max97k)
-* **AI Pair Programmer**: Google DeepMind **Antigravity** (Advanced Agentic Coding Engine)
-
-### 📊 Token 消耗與研發統計
-* **總互動軌跡步數 (Interactive Steps)**: `1,630+` Steps
-* **大語言模型 Token 總消耗量 (LLM Tokens Consumed)**: `7.9+ Million` Tokens (~7,900,000 Tokens)
-  * **輸入提示詞 Token (Prompt Tokens)**: ~7,520,000
-  * **輸出生成 Token (Completion Tokens)**: ~380,000
-  * **上下文快取命中讀取量 (Context Cache Read)**: `118+ Million` Tokens
-* **軟體品質驗證**: S32DS GCC 10.2.0 編譯 **0 Errors, 0 Warnings**，Flash 記憶體使用率良好（Flash: ~34.6 KB, RAM: ~6.3 KB）。
+* All other product or brand names are properties of their respective owners.
