@@ -41,3 +41,6 @@ ClockYaml.txt
 csv_output.csv
 html_report_Pins.html
 .default_mex
+
+__pycache__/
+*.pyc
