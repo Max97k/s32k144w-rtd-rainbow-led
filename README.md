@@ -44,7 +44,7 @@ Following standard NXP project distribution conventions:
 
 1. **Clone the Repository**:
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/Max97k/s32k144w-rtd-rainbow-led.git
    ```
 
 2. **Import into S32 Design Studio**:
