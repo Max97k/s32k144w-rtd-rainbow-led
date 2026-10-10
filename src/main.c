@@ -35,7 +35,6 @@ extern "C" {
 #include "OsIf_Timer_System_Internal_Systick.h"
 
 #include "gamma_lut_1025.h"
-#include "check_example.h"
 
 /* Peripheral register definitions for ADC0, PCC, PMC */
 #include "S32K144W_PCC.h"
@@ -577,9 +576,6 @@ int main(void)
 
     /* Set initial color state (Red at 0 hue) */
     Rainbow_Update16(0U);
-
-    /* Mark test harness success */
-    Exit_Example(TRUE);
 
     /*----------------------------------------------------------------------------------------------
     * 6. Dual-Mode Extreme 16-Bit True-Color Lighting Engine
