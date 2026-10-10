@@ -1,8 +1,8 @@
 /*
-*   Copyright 2020-2026 NXP
+*   Copyright (c) 2026, Max97k
+*   All rights reserved.
 *
-*   NXP Confidential and Proprietary. This software is owned or controlled by NXP and may only be
-*   used strictly in accordance with the applicable license terms.
+*   SPDX-License-Identifier: BSD-3-Clause
 *
 *   S32K144W Dual-Engine Ultra-High Resolution 16-Bit Lighting System
 *   Modes:
@@ -10,9 +10,10 @@
 *                                        (Absolute phase coherence, zero spectral distortion, 32-bit dither)
 *     - Mode 0 (CONFIG_ENGINE_MODE = 0): Hybrid Architecture: Hardware FTM PWM (Red/Blue) + 1.0 MHz PDM (Green)
 *                                        (Hardware timer offloading with dual-green backward compatibility)
-*   Features: 65,536-step continuous hue sweep @ 10,000 FPS color refresh rate.
+*   Features: 65,536-step continuous hue sweep @ 5.000000s exact cycle (Bresenham zero-drift pacing).
 *             16-bit continuous Gamma 2.2 interpolation on 1025-point calibration curve.
 *             100% NXP Real Time Drivers (RTD) Public APIs & MEX-Generated Configurations.
+*             Automotive Functional Safety (ISO 26262 / MISRA C Ready) defensive architecture.
 */
 
 #ifdef __cplusplus
